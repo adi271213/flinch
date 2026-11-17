@@ -64,7 +64,6 @@ def _transport_error_types() -> tuple[type[BaseException], ...]:
     return tuple(errors)
 
 
-_TRANSPORT_ERRORS = _transport_error_types()
 _RetryResult = TypeVar("_RetryResult")
 
 
@@ -79,7 +78,10 @@ def _is_transient(exc: BaseException) -> bool:
     status = _http_status(exc)
     if status is not None:
         return status == 429 or 500 <= status < 600
-    return isinstance(exc, _TRANSPORT_ERRORS)
+    # Resolve optional HTTP clients only while handling an acquisition error.
+    # Importing requests/urllib3 can probe local sockets; local diagnostics also
+    # reuse this module's header parser and must remain free of that side effect.
+    return isinstance(exc, _transport_error_types())
 
 
 def _retry_after(exc: BaseException) -> float | None:

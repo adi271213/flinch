@@ -47,6 +47,7 @@ from lerobot.utils.constants import (
     OBS_LANGUAGE_TOKENS,
 )
 
+from .guard import InputEnvelopeError, InputEnvelopeGuardStep
 from .models import DiagnosticFinding, DiagnosticStatus, Provenance, Severity
 from .preflight import (
     _CONFIG_NAMES,
@@ -717,6 +718,7 @@ def _gain_mask(
             DeviceProcessorStep,
             RenameObservationsProcessorStep,
             NewLineTaskProcessorStep,
+            InputEnvelopeGuardStep,
         ),
     ):
         return torch.zeros_like(large)
@@ -759,6 +761,7 @@ def _trace_pipeline(
 ) -> tuple[dict[str, Any] | None, dict[str, int]]:
     pipeline, config_path, config = artifact
     before: dict[str, torch.Tensor] = {}
+    observation_tensor_keys: set[str] = set()
     active_index: int | None = None
     coverage = {"steps": 0, "bypass_targets": 0, "preprocessor_tensors": 0, "postprocessor_tensors": 0}
     step_states = [
@@ -798,13 +801,60 @@ def _trace_pipeline(
         )
 
     def before_hook(index: int, transition: dict[str, Any]) -> None:
-        nonlocal before, active_index
+        nonlocal before, active_index, observation_tensor_keys
         active_index = index
         before = _tensors(transition)
+        observation = transition.get("observation", {})
+        observation_tensor_keys = (
+            {key for key, value in observation.items() if isinstance(value, torch.Tensor)}
+            if isinstance(observation, dict)
+            else set()
+        )
 
     def after_hook(index: int, transition: dict[str, Any]) -> None:
         after = _tensors(transition)
         coverage["steps"] += 1
+        step = pipeline.steps[index]
+        if isinstance(step, InputEnvelopeGuardStep):
+            checked_keys = sorted(
+                key
+                for key, value in before.items()
+                if key in observation_tensor_keys
+                and value.is_floating_point()
+                and (step.keys is None or key in step.keys)
+            )
+            clamped_keys = [key for key in checked_keys if not torch.equal(before[key], after[key])]
+            findings.append(
+                DiagnosticFinding(
+                    "INPUT_ENVELOPE_GUARD",
+                    DiagnosticStatus.PASS if checked_keys else DiagnosticStatus.UNKNOWN,
+                    Severity.INFO,
+                    f"Input envelope guard executed at {role} step {index}; "
+                    + (
+                        "finite outliers were clamped in the selected sample tensors."
+                        if clamped_keys
+                        else "selected sample tensors passed the guard."
+                        if checked_keys
+                        else "no selected floating sample tensor was present."
+                    ),
+                    {
+                        "pipeline_role": role,
+                        "step_index": index,
+                        "step_class": type(step).__name__,
+                        "max_abs": step.max_abs,
+                        "on_violation": step.on_violation,
+                        "keys": step.keys,
+                        "checked_tensor_keys": checked_keys,
+                        "clamped_tensor_keys": clamped_keys,
+                        "guard_scope": "selected floating observation tensors at this insertion point only",
+                        "execution_device": "cpu",
+                        "sample_sources": sources,
+                    },
+                    _step_provenance(
+                        config_path, config, index, checked_keys[0] if checked_keys else "observation"
+                    ),
+                )
+            )
         bypasses, checked = _bypasses(pipeline.steps[index], step_states[index], before, after)
         coverage["bypass_targets"] += checked
         for key, details, indices in bypasses:
@@ -860,6 +910,32 @@ def _trace_pipeline(
         with torch.inference_mode():
             return pipeline(data), coverage
     except _StopTrace:
+        return None, coverage
+    except InputEnvelopeError as exc:
+        assert active_index is not None
+        step = pipeline.steps[active_index]
+        tensor = before.get(exc.key)
+        emit(
+            "INPUT_ENVELOPE_VIOLATION",
+            active_index,
+            exc.key,
+            {
+                "max_abs": step.max_abs,
+                "on_violation": step.on_violation,
+                "keys": step.keys,
+                "input_values": exc.values,
+                "guard_input_values": exc.values,
+                "tensor_slice": exc.values,
+                "violating_index_count": exc.total_count,
+                "tensor_shape": list(tensor.shape) if tensor is not None else None,
+                "indexing": "flattened row-major",
+                "processor_output_available": False,
+                "guard_scope": "selected floating observation tensors at this insertion point only",
+            },
+            exc.indices,
+        )
+        assert findings[-1].provenance is not None
+        findings[-1].provenance.violating_index_count = exc.total_count
         return None, coverage
     except Exception as exc:
         key = next(iter(before), "transition")

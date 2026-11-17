@@ -183,6 +183,64 @@ print(json.dumps(observed, indent=2))
 """
 
 
+_GUARD_FIXTURES = r"""
+from pathlib import Path
+import json, shutil, socket, sys
+import numpy as np
+import torch
+from lerobot.processor import PolicyProcessorPipeline, batch_to_transition, transition_to_batch
+import lerobot_flinch.guard as guard_module
+from lerobot_flinch.guard import InputEnvelopeError, add_input_guard
+
+assert Path(guard_module.__file__).resolve().is_relative_to(Path(sys.prefix).resolve())
+def denied(*args, **kwargs):
+    raise AssertionError("Guard fixture generation and execution must remain offline")
+socket.socket = socket.create_connection = denied
+root = Path(sys.argv[1])
+observed = {}
+def load(path):
+    return PolicyProcessorPipeline.from_pretrained(path, config_filename="policy_preprocessor.json",
+        local_files_only=True, to_transition=batch_to_transition, to_output=transition_to_batch)
+for name, source in (("guarded_clean", "clean"), ("guarded_gain", "pathological_gain"),
+                     ("guarded_nan", "fp16_nan"), ("guarded_relative", "current_first_normalized")):
+    path = root / name
+    shutil.copytree(root / source, path)
+    pre = add_input_guard(load(path), max_abs=10.0)
+    pre.save_pretrained(path, config_filename="policy_preprocessor.json")
+    pre = load(path)
+    with np.load(path / "sample.npz", allow_pickle=False) as data:
+        sample = {"observation.state": torch.from_numpy(data["observation.state"].copy())}
+    try:
+        output = pre(sample)["observation.state"]
+    except InputEnvelopeError as exc:
+        assert name in {"guarded_gain", "guarded_nan"}
+        observed[name] = {"guard_stopped_input": True, "key": exc.key,
+                          "indices": exc.indices, "total_count": exc.total_count}
+    else:
+        assert name in {"guarded_clean", "guarded_relative"}
+        assert torch.isfinite(output).all() and output.abs().max() <= 10
+        observed[name] = {"guard_stopped_input": False, "output_max_abs": float(output.abs().max())}
+weakened = root / "guard_weakened"
+shutil.copytree(root / "guarded_clean", weakened)
+path = weakened / "policy_preprocessor.json"
+config = json.loads(path.read_text())
+next(step for step in config["steps"] if step.get("registry_name") == "flinch_input_guard")["config"]["max_abs"] = 100.0
+path.write_text(json.dumps(config), encoding="utf-8")
+sample = {"observation.state": torch.full((1, 14), 20.0)}
+try:
+    load(root / "guarded_clean")(sample)
+except InputEnvelopeError:
+    pass
+else:
+    raise AssertionError("The baseline envelope must reject this input")
+output = load(weakened)(sample)["observation.state"]
+assert output.abs().max() > 10 and output.abs().max() <= 100
+observed["guard_weakened"] = {"baseline_rejected": True, "candidate_max_abs": float(output.abs().max())}
+(root / "guard_ground_truth.json").write_text(json.dumps(observed, indent=2), encoding="utf-8")
+print(json.dumps(observed, indent=2))
+"""
+
+
 def _hash(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -432,6 +490,8 @@ def main(argv: list[str] | None = None) -> int:
                 "generate_native_fixtures", [python, "-I", "-c", _FIXTURES, fixtures]
             )
             if generated:
+                generated = run("generate_guard_fixtures", [python, "-I", "-c", _GUARD_FIXTURES, fixtures])
+            if generated:
                 hashes = {
                     str(path.relative_to(fixtures)): _hash(path)
                     for path in fixtures.rglob("*")
@@ -521,6 +581,30 @@ def main(argv: list[str] | None = None) -> int:
                     conflicts=("ACTION_STATS_CONFLICT",),
                 )
                 case("oldest_first", "oldest_first", 1, ("TEMPORAL_ANCHOR_MISMATCH",))
+                case("guarded_clean", "guarded_clean", 0)
+                case(
+                    "guarded_gain",
+                    "guarded_gain",
+                    1,
+                    ("EMPIRICAL_GAIN_EXPLOSION", "INPUT_ENVELOPE_VIOLATION"),
+                )
+                case("guarded_nan", "guarded_nan", 1, ("RUNTIME_NON_FINITE",))
+                for name in ("guarded_clean", "guarded_relative"):
+                    case(
+                        name + "_self_strict",
+                        name,
+                        0,
+                        sample=False,
+                        extra=("--baseline", fixtures / name, "--strict"),
+                    )
+                case(
+                    "guard_weakened",
+                    "guard_weakened",
+                    1,
+                    ("PRIVILEGE_GUARD_REMOVAL",),
+                    sample=False,
+                    extra=("--baseline", fixtures / "guarded_clean"),
+                )
                 for name in ("current_first", "current_first_normalized"):
                     case(name, name, 0)
                     case(name + "_self", name, 0, sample=False, extra=("--baseline", fixtures / name))

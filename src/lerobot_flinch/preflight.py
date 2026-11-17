@@ -35,7 +35,7 @@ from lerobot.processor import (
 )
 from safetensors import safe_open
 
-from .guard import InputEnvelopeGuardStep
+from .guard import InputEnvelopeError, InputEnvelopeGuardStep
 from .models import (
     MAX_EVIDENCE_ITEMS,
     DiagnosticFinding,
@@ -111,6 +111,14 @@ def _normalizer_features(entry: dict[str, Any], state: dict[str, torch.Tensor]) 
     return features
 
 
+class _GuardProbeFailure(ValueError):
+    """A real guard rejected a synthetic probe after the preserved native prefix."""
+
+    def __init__(self, index: int, key: str, error: InputEnvelopeError, snapshots: list[dict[str, Any]]):
+        super().__init__(str(error))
+        self.index, self.key, self.error, self.snapshots = index, key, error, snapshots
+
+
 def _native_normalization_probe(
     entries: list[dict[str, Any]],
     normalizers: dict[int, Any],
@@ -156,6 +164,12 @@ def _native_normalization_probe(
             step = cls(**entry.get("config", {}))
             if current_key != "action":
                 current_key = next(iter(step.observation({current_key: None})))
+        elif cls is InputEnvelopeGuardStep:
+            if feature_key == "action":
+                continue  # This observation-only guard cannot touch the ACTION transition.
+            step = cls(**entry.get("config", {}))
+            if step.keys is not None and current_key not in step.keys:
+                continue
         elif index in normalizers:
             candidate = normalizers[index]
             if current_key == "action":
@@ -189,7 +203,7 @@ def _native_normalization_probe(
                     barrier = ValueError(f"Active native normalization is unavailable at step {index}")
                     break
             elif (
-                cls not in (IdentityProcessorStep, AddBatchDimensionProcessorStep, InputEnvelopeGuardStep)
+                cls not in (IdentityProcessorStep, AddBatchDimensionProcessorStep)
                 and kind not in language_only
             ):
                 barrier = ValueError(
@@ -208,13 +222,16 @@ def _native_normalization_probe(
     pipeline = PolicyProcessorPipeline(
         steps=steps, to_transition=lambda data: data, to_output=lambda data: data
     )
-    snapshots = []
+    snapshots: list[dict[str, Any]] = []
     previous = probes.detach().cpu().clone()
     iterator = iter(pipeline.step_through(transition))
     next(iterator)
     with torch.inference_mode():
         for index, step, (input_key, output_key) in zip(indices, steps, feature_keys, strict=True):
-            current = next(iterator)
+            try:
+                current = next(iterator)
+            except InputEnvelopeError as exc:
+                raise _GuardProbeFailure(index, input_key, exc, snapshots) from exc
             output = current["action"] if feature_key == "action" else current["observation"][output_key]
             copied = output.detach().cpu().clone()
             snapshots.append(
@@ -277,6 +294,22 @@ def _screen_composed_forward_gain(
     report: PreflightReport,
 ) -> None:
     """Compose native typed affine slopes after a complete finite subpath probe."""
+    # A clamp is not an affine identity. Screen each surrounding affine segment
+    # independently; the guard's actual bounded outputs are retained by probes.
+    splits = [
+        i
+        for i, snapshot in enumerate(snapshots)
+        if _step_class(config["steps"][snapshot["step_index"]]) is InputEnvelopeGuardStep
+        and config["steps"][snapshot["step_index"]].get("config", {}).get("on_violation") == "clamp"
+    ]
+    if splits:
+        start = 0
+        for stop in [*splits, len(snapshots)]:
+            _screen_composed_forward_gain(
+                root, path, config, normalizers, key, snapshots[start:stop], threshold, report
+            )
+            start = stop + 1
+        return
     gain: torch.Tensor | None = None
     contributors: list[dict[str, Any]] = []
     forward_count = 0
@@ -408,6 +441,47 @@ def _screen_native_normalization_chain(
         try:
             probes = _normalizer_boundary_probes(first_step, key)
             snapshots = _native_normalization_probe(config["steps"], normalizers, key, probes)
+        except _GuardProbeFailure as exc:
+            if _role(path, config) == "pre":
+                _screen_composed_forward_gain(
+                    root, path, config, normalizers, key, exc.snapshots, threshold, report
+                )
+            _add(
+                report,
+                "INPUT_ENVELOPE_GUARD",
+                DiagnosticStatus.PASS,
+                "The native input guard rejected an out-of-envelope synthetic boundary probe as configured.",
+                {
+                    "step_index": exc.index,
+                    "feature_key": exc.key,
+                    "synthetic_boundary_probe": True,
+                    "guard_executed": True,
+                    "guard_config": config["steps"][exc.index].get("config", {}),
+                    "offending_indices": getattr(exc.error, "indices", []),
+                    "tensor_slice": getattr(exc.error, "values", []),
+                    "violating_count": getattr(exc.error, "total_count", None),
+                    "indexing": "flattened synthetic probe tensor",
+                    "normalization_prefix_screened": True,
+                    "subsequent_steps_probed": False,
+                },
+                _provenance(path, exc.index, exc.key, getattr(exc.error, "indices", [])),
+            )
+            if any(index > exc.index for index in normalizers):
+                _add(
+                    report,
+                    "NORMALIZATION_CHAIN_PROBE",
+                    DiagnosticStatus.UNKNOWN,
+                    "The guard rejected the boundary domain before downstream normalization could be probed.",
+                    {
+                        "step_index": exc.index,
+                        "feature_key": exc.key,
+                        "required_coverage": True,
+                        "reason": "input_guard_rejected_boundary_domain",
+                        "synthetic_boundary_probe": True,
+                    },
+                    _provenance(path, exc.index, exc.key),
+                )
+            continue
         except (ValueError, RuntimeError, KeyError, TypeError) as exc:
             _add(
                 report,

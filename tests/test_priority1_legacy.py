@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -133,6 +135,34 @@ def test_local_legacy_screens_only_the_active_mode(tmp_path: Path, mode: str, ex
         )
         is expected
     )
+
+
+def test_fresh_process_local_legacy_audit_opens_no_sockets(tmp_path: Path) -> None:
+    checkpoint = _legacy(tmp_path / "legacy")
+    source = Path(__file__).resolve().parents[1] / "src"
+    env = {**os.environ, "PYTHONPATH": str(source)}
+    script = """
+import socket
+import sys
+from pathlib import Path
+from lerobot_flinch.preflight import run_preflight
+def denied(*args, **kwargs):
+    raise AssertionError('offline legacy audit opened a socket')
+socket.socket = denied
+socket.create_connection = denied
+assert 'lerobot_flinch.hub_scanner' not in sys.modules
+report = run_preflight(Path(sys.argv[1]))
+assert any(f.check_id == 'PATHOLOGICAL_STD_GAIN' and f.status.value == 'FAIL' for f in report.findings)
+assert not any(f.check_id == 'CHECK_INCOMPLETE' for f in report.findings)
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(checkpoint)],
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 @pytest.mark.parametrize(

@@ -28,6 +28,7 @@ from lerobot.processor import (
 )
 from safetensors import SafetensorError
 
+from .guard import InputEnvelopeGuardStep
 from .models import _json_value
 from .preflight import (
     _MASKED_NORMALIZERS,
@@ -297,6 +298,26 @@ def build_processor_graph(checkpoint_dir: Path, metadata_path: Path | None = Non
                 shapes = {key: {**value, "shape": None, "dtype": None} for key, value in shapes.items()}
             if cls is DeviceProcessorStep and entry_config.get("float_dtype") is not None:
                 active_dtype = entry_config["float_dtype"]
+            guard = None
+            guard_properties: dict[str, Any] = {}
+            if cls is InputEnvelopeGuardStep:
+                try:
+                    guard = InputEnvelopeGuardStep(**entry_config)
+                    guard_properties = {
+                        "operation": "input_envelope_guard",
+                        "max_abs": guard.max_abs,
+                        "on_violation": guard.on_violation,
+                        "keys": guard.keys,
+                        "rejects_non_finite": True,
+                        "guard_scope": "selected floating observation tensors at this insertion point only",
+                        "action_tensor_guarded": False,
+                        "envelope_units": "tensor values at the guard step; no physical-unit inference",
+                    }
+                except (TypeError, ValueError) as exc:
+                    errors.append(
+                        {"file_path": path.name, "status": "UNKNOWN", "reason": f"step {index}: {exc}"}
+                    )
+                    guard_properties = {"operation": "input_envelope_guard", "guard_config_status": "UNKNOWN"}
             step_id = node(
                 "processor_step",
                 (path.name, index),
@@ -313,6 +334,7 @@ def build_processor_graph(checkpoint_dir: Path, metadata_path: Path | None = Non
                 sha256=_sha(path),
                 step_config_sha256=hashlib.sha256(_canonical(entry).encode()).hexdigest(),
                 inspected_native=cls is not None,
+                **guard_properties,
             )
             if previous_step is not None:
                 edge(previous_step, step_id, "FLOWS_TO", pipeline_role=role, ordered=True)
@@ -582,8 +604,31 @@ def build_processor_graph(checkpoint_dir: Path, metadata_path: Path | None = Non
                                     "reason": f"step {index} {key} gain could not be evaluated: {exc}",
                                 }
                             )
-                edge(source, step_id, "FLOWS_TO", feature_key=key, effective_dtype=props["effective_dtype"])
-                edge(step_id, output, "TRANSFORMS", **props)
+                input_edge, output_edge = "FLOWS_TO", "TRANSFORMS"
+                if cls is InputEnvelopeGuardStep:
+                    props.pop("normalization_mode")
+                    declared_dtype = declaration.get("dtype")
+                    selected = (
+                        guard is not None and key != "action" and (guard.keys is None or key in guard.keys)
+                    )
+                    floating = declared_dtype is None or declared_dtype in DeviceProcessorStep.DTYPE_MAPPING
+                    applies = selected and floating
+                    guard_mode = guard.on_violation if guard is not None else None
+                    props.update(
+                        **guard_properties,
+                        guard_applies=applies,
+                        guard_dtype_conditional=applies and declared_dtype is None,
+                        guard_effect="not selected or not a floating observation tensor"
+                        if not applies
+                        else "finite values outside the envelope are clamped; non-finite values raise"
+                        if guard_mode == "clamp"
+                        else "out-of-envelope or non-finite values raise before subsequent steps",
+                    )
+                    if applies:
+                        input_edge = "GUARDS"
+                        output_edge = "CLAMPS" if guard_mode == "clamp" else "GUARDS"
+                edge(source, step_id, input_edge, feature_key=key, effective_dtype=props["effective_dtype"])
+                edge(step_id, output, output_edge, **props)
                 new_current[output_key], new_shapes[output_key] = output, declaration
             current, shapes = new_current, new_shapes
             if cls is RelativeActionsProcessorStep and entry_config.get("enabled", False):
@@ -800,6 +845,8 @@ def processor_graph_to_mermaid(graph: dict[str, Any]) -> str:
             label += (
                 f"; {props.get('active_dtype') or 'input dtype'}; {scope} {str(digest or 'unavailable')[:12]}"
             )
+            if props.get("operation") == "input_envelope_guard" and props.get("max_abs") is not None:
+                label += f"; finite, abs <= {props['max_abs']:g}; {props['on_violation']}"
         else:
             label += f"; sha256 {str(props.get('sha256') or '')[:12]}"
             unbound = props.get("unbound_keys", [])
@@ -817,6 +864,13 @@ def processor_graph_to_mermaid(graph: dict[str, Any]) -> str:
         if props.get("active_max_gain") is not None:
             value = props["active_max_gain"]
             label += f" gain={value:.8g}x" if isinstance(value, (int, float)) else f" gain={value}"
+        if props.get("operation") == "input_envelope_guard":
+            if props.get("guard_applies"):
+                label += (
+                    f" finite, abs <= {props['max_abs']:g}; {props['on_violation']}; insertion point only"
+                )
+            else:
+                label += "; outside selected observation guard scope"
         if props.get("tensor_keys"):
             label += " " + ", ".join(props["tensor_keys"])
         if props.get("missing_keys"):

@@ -108,17 +108,21 @@ Flinch never guesses physical units. A tensor's shape can't tell you whether a j
 - **Changes between checkpoints:** with `--baseline`, significant changes to input/action scaling, offsets or clipping under the configured thresholds, and increases in open-loop execution steps. Missing required comparison evidence blocks the gate.
 - **Broken files:** Git LFS pointers saved in place of real data, and old-format checkpoints that need migrating.
 
-## 🛡️ Guard your robot at runtime
+## 🛡️ Guard selected inputs at runtime
 
-The checks above run before deployment. To also catch a bad input while the robot is running, add Flinch's guard to your preprocessor. It sits right after the normalizer and stops the policy from ever seeing an exploded value:
+The audits above run offline. For an additional runtime check, add an opt-in envelope guard after the last normalizer in your preprocessor:
 
 ```python
 from lerobot_flinch.guard import add_input_guard
 
-preprocessor = add_input_guard(preprocessor, max_abs=10.0)  # raise if a normalized input leaves ±10
+preprocessor = add_input_guard(preprocessor, max_abs=10.0)
 ```
 
-`max_abs` is in normalized units, so with mean/std normalization `10` means ten standard deviations from the training mean. By default the guard raises `InputEnvelopeError` and names the key and coordinates. Use `on_violation="clamp"` to clip instead. NaN or Inf always raises, because clipping would hide it.
+The helper selects observation keys with active, bound normalization statistics, leaving `IDENTITY` and excluded raw features alone. Ambiguous partially normalized masks require an explicit selection. Use `keys=["observation.state"]` to choose a scope yourself. The limit applies to the values at the guard's insertion point; it does not infer physical units. With `MEAN_STD`, a limit of `10` is approximately ten saved standard deviations only when `eps` is negligible. Other normalization modes have different interpretations.
+
+The default is to raise `InputEnvelopeError` with the key and bounded coordinate evidence. `on_violation="clamp"` explicitly opts into clipping finite outliers; checked non-finite values still raise. The guard operates on selected floating PyTorch tensors, not arbitrary NumPy or metadata values.
+
+`add_input_guard` modifies the supplied pipeline in place. Calling it again reconfigures a single helper-managed guard; manual or multiple guards require explicit management. Later processor steps may change the values again, so this is an insertion-point check, not a guarantee about the final policy input or hardware safety. Offline audits remain read-only and run no policy, simulator or motor commands.
 
 The guard saves and loads with the pipeline. Just `import lerobot_flinch.guard` before `PolicyProcessorPipeline.from_pretrained` so LeRobot knows the step.
 

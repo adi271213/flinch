@@ -26,6 +26,7 @@ from lerobot.processor import (
 )
 from safetensors import safe_open
 
+from .guard import InputEnvelopeError, InputEnvelopeGuardStep
 from .models import DiagnosticFinding, DiagnosticStatus, PreflightReport, Provenance, Severity
 from .preflight import (
     _CONFIG_NAMES,
@@ -484,6 +485,51 @@ def _guard_delta(
             occurrence[kind] += 1
             matches = by_kind[kind]
             candidate_index, candidate_entry = matches[ordinal] if ordinal < len(matches) else (None, None)
+            if _step_class(entry) is InputEnvelopeGuardStep:
+                old_guard = InputEnvelopeGuardStep(**entry.get("config", {}))
+                new_guard = (
+                    InputEnvelopeGuardStep(**candidate_entry.get("config", {}))
+                    if candidate_entry is not None
+                    else None
+                )
+                reasons, removed_keys = [], []
+                if new_guard is None:
+                    reasons.append("input_guard_removed")
+                else:
+                    if new_guard.max_abs > old_guard.max_abs:
+                        reasons.append("input_guard_envelope_widened")
+                    if old_guard.on_violation == "raise" and new_guard.on_violation == "clamp":
+                        reasons.append("input_guard_raise_downgraded_to_clamp")
+                    if old_guard.keys is None and new_guard.keys is not None:
+                        reasons.append("input_guard_key_coverage_reduced")
+                    elif old_guard.keys is not None and new_guard.keys is not None:
+                        removed_keys = sorted(set(old_guard.keys) - set(new_guard.keys))
+                        if removed_keys:
+                            reasons.append("input_guard_key_coverage_reduced")
+                if reasons:
+                    key = (removed_keys or old_guard.keys or ["observation.*"])[0]
+                    _add(
+                        findings,
+                        _GUARD,
+                        DiagnosticStatus.FAIL,
+                        "A baseline input envelope guard was removed or weakened.",
+                        {
+                            "step_index": candidate_index,
+                            "baseline_step_index": base_index,
+                            "pipeline_role": "preprocessor" if role == "pre" else "postprocessor",
+                            "feature_key": key,
+                            "reason": reasons[0],
+                            "reasons": reasons,
+                            "baseline_config": old_guard.get_config(),
+                            "candidate_config": new_guard.get_config() if new_guard is not None else None,
+                            "removed_keys": removed_keys,
+                            "guarded_feature_keys": old_guard.keys,
+                            "tensor_slice": [],
+                            "scope": "serialized_input_envelope_guard",
+                            "baseline_provenance": _provenance(base_path, base_index, key).to_dict(),
+                        },
+                        _provenance(candidate_path, candidate_index, key),
+                    )
             base_step = _native_normalizer(baseline, entry)
             candidate_step = (
                 _native_normalizer(candidate, candidate_entry) if candidate_entry is not None else None
@@ -1649,21 +1695,24 @@ def _composed_observation_delta(
         if not legacy:
             return  # A native probe emitted explicit failure/incomplete coverage.
         old_output, new_output = probes * old_slope + old_offset, probes * new_slope + new_offset
+    nonlinear = any(
+        _step_class(entry) is InputEnvelopeGuardStep
+        and entry.get("config", {}).get("on_violation") == "clamp"
+        for artifact in (baseline, candidate)
+        for entry in artifact[2]["steps"]
+    )
     ratio = new_slope.abs() / old_slope.abs().clamp_min(1e-30)
     output_shift = (new_output - old_output).abs().amax(dim=0)
     offset_shift = (new_offset - old_offset).abs()
-    mask = (
-        (output_shift > shift_threshold)
-        | (offset_shift > shift_threshold)
-        | (ratio > scale_ratio)
-        | (ratio < 1 / scale_ratio)
-    )
-    mask |= (
-        ~torch.isfinite(new_slope)
-        | ~torch.isfinite(new_offset)
-        | ~torch.isfinite(old_slope)
-        | ~torch.isfinite(old_offset)
-    )
+    mask = output_shift > shift_threshold
+    if not nonlinear:
+        mask |= (offset_shift > shift_threshold) | (ratio > scale_ratio) | (ratio < 1 / scale_ratio)
+        mask |= (
+            ~torch.isfinite(new_slope)
+            | ~torch.isfinite(new_offset)
+            | ~torch.isfinite(old_slope)
+            | ~torch.isfinite(old_offset)
+        )
     if not bool(mask.any()):
         return
     index, previous_index = current[-1]["step_index"], previous[-1]["step_index"]
@@ -1675,6 +1724,7 @@ def _composed_observation_delta(
         f"The candidate changes the composed policy-input observation normalization for {key}.",
         {
             "comparison_scope": "composed_policy_input",
+            "affine_mapping_claimed": not nonlinear,
             "feature_key": key,
             "required_coverage": True,
             "step_index": None if candidate[2]["steps"][index].get("_legacy") else index,
@@ -1684,12 +1734,12 @@ def _composed_observation_delta(
             "indexing": "flattened statistic broadcast grid",
             "baseline_step_indices": [stage["step_index"] for stage in previous],
             "candidate_step_indices": [stage["step_index"] for stage in current],
-            "baseline_composed_slope": old_slope[mask].tolist(),
-            "candidate_composed_slope": new_slope[mask].tolist(),
-            "baseline_composed_offset": old_offset[mask].tolist(),
-            "candidate_composed_offset": new_offset[mask].tolist(),
-            "composed_slope_ratio": ratio[mask].tolist(),
-            "composed_offset_shift": offset_shift[mask].tolist(),
+            "baseline_composed_slope": old_slope[mask].tolist() if not nonlinear else None,
+            "candidate_composed_slope": new_slope[mask].tolist() if not nonlinear else None,
+            "baseline_composed_offset": old_offset[mask].tolist() if not nonlinear else None,
+            "candidate_composed_offset": new_offset[mask].tolist() if not nonlinear else None,
+            "composed_slope_ratio": ratio[mask].tolist() if not nonlinear else None,
+            "composed_offset_shift": offset_shift[mask].tolist() if not nonlinear else None,
             "policy_input_shift": output_shift[mask].tolist(),
             "probe_inputs": probes[:, mask].tolist(),
             "baseline_probe_outputs": old_output[:, mask].tolist(),
@@ -1798,6 +1848,7 @@ def _relative_action_mapping(root: Path, policy: dict[str, Any], pair: _Artifact
         "chronology_source": "disabled_conversion",
     }
     maps, native_pipelines, contributors = {}, {}, []
+    nonlinear_guards = []
     state_probe_points = None
     state_slope, state_offset = (
         torch.ones(state_width, dtype=torch.float64),
@@ -1870,6 +1921,12 @@ def _relative_action_mapping(root: Path, policy: dict[str, Any], pair: _Artifact
                 native = cls(**entry.get("config", {}))
                 if role == "preprocessor":
                     current_key = next(iter(native.observation({current_key: None})))
+            elif cls is InputEnvelopeGuardStep:
+                if role == "postprocessor":
+                    raise ValueError("Observation guards require an observation-bearing preprocessor")
+                native = cls(**entry.get("config", {}))
+                if native.on_violation == "clamp" and (native.keys is None or current_key in native.keys):
+                    nonlinear_guards.append({"step_index": index, "config": native.get_config()})
             elif cls is RelativeActionsProcessorStep and role == "preprocessor" and index == relative_index:
                 if current_key != "observation.state":
                     raise ValueError(
@@ -1914,6 +1971,7 @@ def _relative_action_mapping(root: Path, policy: dict[str, Any], pair: _Artifact
         "state_probe_points": state_probe_points,
         "enabled": [relative.enabled, absolute.enabled],
         "contributors": contributors,
+        "nonlinear_guards": nonlinear_guards,
         "provenance": _provenance(pair[0][1], "RelativeActionsProcessorStep", "observation.state"),
     }
 
@@ -1979,6 +2037,26 @@ def _relative_native_probes(
                             _step_provenance(path, config, index, key, dimensions),
                         )
                         return None
+        except InputEnvelopeError as exc:
+            mapping["guard_rejected_probe"] = True
+            _add(
+                findings,
+                "INPUT_ENVELOPE_GUARD",
+                DiagnosticStatus.PASS,
+                "The native guard rejected an out-of-envelope relative-action boundary probe as configured.",
+                {
+                    "checkpoint_role": role,
+                    "pipeline_role": pipeline_role,
+                    "step_index": index,
+                    "feature_key": getattr(exc, "key", "observation.state"),
+                    "tensor_slice": getattr(exc, "values", []),
+                    "offending_indices": getattr(exc, "indices", []),
+                    "synthetic_boundary_probe": True,
+                    "guard_executed": True,
+                },
+                _step_provenance(path, config, index, getattr(exc, "key", "observation.state")),
+            )
+            return None
         except (ValueError, RuntimeError, TypeError, KeyError, AttributeError) as exc:
             _add(
                 findings,
@@ -1995,6 +2073,51 @@ def _relative_native_probes(
             return None
         outputs[pipeline_role] = transition["action"].detach().double().clone()
     return outputs
+
+
+def _same_processor_contracts(old: _ArtifactPair, new: _ArtifactPair) -> bool:
+    """Prove exact deterministic function identity, including nonlinear guards."""
+    for before, after in zip(old, new, strict=True):
+        old_steps, new_steps = before[2]["steps"], after[2]["steps"]
+        if len(old_steps) != len(new_steps):
+            return False
+        for left, right in zip(old_steps, new_steps, strict=True):
+            if _kind(left) != _kind(right) or left.get("config", {}) != right.get("config", {}):
+                return False
+        if before[0].keys() != after[0].keys():
+            return False
+        for index, step in before[0].items():
+            left, right = step.state_dict(), after[0][index].state_dict()
+            if left.keys() != right.keys() or any(
+                left[key].shape != right[key].shape
+                or left[key].dtype != right[key].dtype
+                or not torch.equal(left[key], right[key])
+                for key in left
+            ):
+                return False
+    return True
+
+
+def _guarded_relative_identity(
+    mapping: dict[str, Any], findings: list[DiagnosticFinding], *, probes_completed: bool
+) -> None:
+    for check in (_GAIN, _OFFSET, _ENVELOPE):
+        _add(
+            findings,
+            check,
+            DiagnosticStatus.PASS,
+            "Matching serialized native processor functions preserve the guarded relative-action mapping.",
+            {
+                "scope": "exact_guarded_processor_contract_identity",
+                "exact_processor_contracts_verified": True,
+                "affine_mapping_claimed": False,
+                "guard_configurations": mapping["nonlinear_guards"],
+                "native_boundary_probes_completed": probes_completed,
+                "processor_execution_required": True,
+                "relative_anchor_index": mapping["metadata"]["expected_anchor_index"],
+            },
+            mapping["provenance"],
+        )
 
 
 def _relative_action_delta(
@@ -2034,6 +2157,15 @@ def _relative_action_delta(
     )
     old_probe = _relative_native_probes(old, "baseline", findings, state_points)
     new_probe = _relative_native_probes(new, "candidate", findings, state_points)
+    exact_contracts = (
+        _same_processor_contracts(*pairs)
+        and old["enabled"] == new["enabled"]
+        and torch.equal(old["mask"], new["mask"])
+        and old["metadata"]["expected_anchor_index"] == new["metadata"]["expected_anchor_index"] == 0
+    )
+    if exact_contracts and old.get("guard_rejected_probe") and new.get("guard_rejected_probe"):
+        _guarded_relative_identity(new, findings, probes_completed=False)
+        return
     if old_probe is None or new_probe is None:
         for check in (_GAIN, _OFFSET, _ENVELOPE):
             _add(
@@ -2042,6 +2174,34 @@ def _relative_action_delta(
                 DiagnosticStatus.UNKNOWN,
                 "Paired native relative-action boundary probes did not complete.",
                 {"scope": "relative_action_mapping"},
+            )
+        return
+    if old["nonlinear_guards"] or new["nonlinear_guards"]:
+        if exact_contracts:
+            _guarded_relative_identity(new, findings, probes_completed=True)
+            return
+        for check in (_GAIN, _OFFSET, _ENVELOPE):
+            changed = any(
+                bool((new_probe[role] - old_probe[role]).abs().gt(offset_threshold).any())
+                for role in ("preprocessor", "postprocessor")
+            )
+            _add(
+                findings,
+                check,
+                DiagnosticStatus.FAIL if changed else DiagnosticStatus.UNKNOWN,
+                "Native guarded relative-action boundary outputs differ."
+                if changed
+                else "Different nonlinear guarded relative-action functions cannot be proved equivalent by finite probes.",
+                {
+                    "scope": "nonlinear_guarded_relative_mapping",
+                    "affine_mapping_claimed": False,
+                    "required_coverage": True,
+                    "native_probe_shift": {
+                        role: (new_probe[role] - old_probe[role]).abs().amax().item()
+                        for role in ("preprocessor", "postprocessor")
+                    },
+                },
+                new["provenance"],
             )
         return
     width = new["width"]
@@ -2223,6 +2383,10 @@ def _action_affine(artifact: _Artifact) -> dict[str, Any]:
         step = normalizers.get(index)
         if step is None:
             cls = _step_class(entry)
+            if cls is InputEnvelopeGuardStep:
+                raise ValueError(
+                    "An observation input guard cannot be evaluated on action-only postprocessing"
+                )
             if cls in (RelativeActionsProcessorStep, AbsoluteActionsProcessorStep):
                 raise ValueError(
                     "State-dependent action conversion prevents a complete static affine-origin comparison"
