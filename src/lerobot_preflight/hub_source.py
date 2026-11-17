@@ -61,6 +61,21 @@ def looks_like_repo_id(value: str) -> bool:
     return bool(_REPO_ID.fullmatch(value)) and not Path(value).exists()
 
 
+_UNAVAILABLE_ERRORS = {"RepositoryNotFoundError", "GatedRepoError", "RevisionNotFoundError"}
+
+
+def _repository_unavailable(error: dict[str, Any]) -> bool:
+    """A repository-level 401/403/404 means missing, private or gated, never a credential problem."""
+    return error.get("file_path") is None and (
+        error.get("error_type") in _UNAVAILABLE_ERRORS or error.get("http_status") in {401, 403, 404}
+    )
+
+
+def _first_line(message: object) -> str:
+    """Keep the cause of a Hub client error without its multi-line help text."""
+    return str(message).strip().splitlines()[0] if message else "unknown error"
+
+
 @contextmanager
 def resolve_checkpoint(value: str | Path, *, api: Any | None = None) -> Iterator[ResolvedCheckpoint]:
     """Yield a local checkpoint directory for a local path or an ``hf://`` reference.
@@ -92,15 +107,18 @@ def resolve_checkpoint(value: str | Path, *, api: Any | None = None) -> Iterator
             )
         if manifest.get("critical_download_errors"):
             errors = manifest.get("errors") or []
+            if any(_repository_unavailable(item) for item in errors):
+                raise HubSourceError(
+                    f"Repository {reference.display()} was not found (check the repository name and revision), or it is private or gated. "
+                    "Only public, ungated repositories can be audited by reference; "
+                    "download the checkpoint and pass its local path."
+                )
             skipped = [item for item in manifest.get("skipped_files", []) if item.get("reason")]
             reasons = "; ".join(
-                f"{item.get('file_path') or 'repository'}: {item.get('error')}" for item in errors
+                f"{item.get('file_path') or 'repository'}: {_first_line(item.get('error'))}"
+                for item in errors
             ) or "; ".join(f"{item['file_path']}: {item['reason']}" for item in skipped)
-            raise HubSourceError(
-                failure
-                + (f" ({reasons})" if reasons else "")
-                + ". Gated or private repositories are not supported; download the checkpoint and pass its local path."
-            )
+            raise HubSourceError(failure + (f" ({reasons})" if reasons else "") + ".")
         yield ResolvedCheckpoint(
             Path(manifest["checkpoint_dir"]),
             reference.display(manifest.get("revision")),

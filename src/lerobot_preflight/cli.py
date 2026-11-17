@@ -19,7 +19,7 @@ from .hub_source import (
     resolve_checkpoint,
 )
 from .models import DiagnosticFinding, DiagnosticStatus, PreflightReport, Severity
-from .preflight import run_preflight
+from .preflight import _multi_dataset_action_prefixes, run_preflight
 from .temporal import run_temporal_audit
 from .trace import run_offline_trace
 
@@ -93,7 +93,60 @@ def run_checks(
             return run_privilege_delta(Path(baseline), policy)
 
         _collect(report, "privilege delta", compare)
+    _fold_base_model_prerequisites(report)
     return report
+
+
+def _is_unbound_missing_buffer(finding: DiagnosticFinding) -> bool:
+    """A missing-buffer failure explained by unbound multi-dataset base-model statistics."""
+    return (
+        finding.check_id == "FEATURE_CONTRACT"
+        and finding.status is DiagnosticStatus.FAIL
+        and finding.summary.startswith("Required normalization buffer ")
+        and bool(_multi_dataset_action_prefixes(finding.details.get("available_buffer_keys", [])))
+    )
+
+
+def _fold_base_model_prerequisites(report: PreflightReport) -> None:
+    """Present one actionable base-model finding instead of one failure per missing buffer.
+
+    The status stays FAIL: a base model is not deployable as-is. Every folded finding is kept
+    verbatim under ``details.folded_findings`` in the JSON report.
+    """
+    unbound = [
+        finding
+        for finding in report.findings
+        if finding.check_id == "UNBOUND_BASE_MODEL_STATS" and finding.status is DiagnosticStatus.FAIL
+    ]
+    if not unbound:
+        return
+    primary = unbound[0]
+    folded = unbound[1:] + [finding for finding in report.findings if _is_unbound_missing_buffer(finding)]
+    if not folded:
+        return
+    missing: list[dict[str, Any]] = []
+    for finding in folded:
+        provenance = finding.provenance
+        if finding.check_id != "FEATURE_CONTRACT" or provenance is None or not provenance.tensor_key:
+            continue
+        entry = {"processor_file": Path(provenance.file_path).name, "tensor_key": provenance.tensor_key}
+        if entry not in missing:
+            missing.append(entry)
+    files = sorted({entry["processor_file"] for entry in missing if entry["processor_file"]})
+    primary.summary = (
+        "Base model: the target dataset's normalization statistics are not bound "
+        f"({len(missing)} required buffers missing across {len(files)} processor files). "
+        "Fine-tune on your dataset or bind its statistics before deploying; as-is, "
+        "normalization is silently bypassed."
+    )
+    primary.details.update(
+        {
+            "missing_buffers": missing,
+            "folded_findings": [finding.to_dict() for finding in folded],
+        }
+    )
+    folded_ids = {id(finding) for finding in folded}
+    report.findings[:] = [finding for finding in report.findings if id(finding) not in folded_ids]
 
 
 def _compact(value: Any, limit: int = 160) -> str:
@@ -122,13 +175,13 @@ def _finding_context(finding: DiagnosticFinding) -> str:
     dimensions = provenance.get("violating_indices")
     if dimensions is None and details.get("probe_coordinate") is not None:
         dimensions = [details["probe_coordinate"]]
-    if dimensions is not None:
+    if dimensions not in (None, []):
         context.append(
             f"dims={json.dumps(dimensions, ensure_ascii=False, allow_nan=False, separators=(',', ':'))}"
         )
 
     for field in ("tensor_slice", "saved_values", "observed_relative_action_slice", "value"):
-        if field in details:
+        if field in details and details[field] not in (None, [], {}):
             context.append(f"values={_compact(details[field])}")
             break
 
