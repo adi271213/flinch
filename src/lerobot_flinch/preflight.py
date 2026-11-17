@@ -6,11 +6,14 @@ exercise native normalization steps on CPU; no simulation or motor command runs.
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import math
 import re
+from collections.abc import Callable
 from copy import deepcopy
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
 
@@ -31,7 +34,14 @@ from lerobot.processor import (
 )
 from safetensors import safe_open
 
-from .models import DiagnosticFinding, DiagnosticStatus, PreflightReport, Provenance, Severity
+from .models import (
+    MAX_EVIDENCE_ITEMS,
+    DiagnosticFinding,
+    DiagnosticStatus,
+    PreflightReport,
+    Provenance,
+    Severity,
+)
 
 _NORMALIZERS = (NormalizerProcessorStep, UnnormalizerProcessorStep)
 _SAFE_CLASSES = (
@@ -683,9 +693,16 @@ def _provenance(
     # paths. Error provenance may retain a rejected link: never follow it to hash
     # an unrelated file merely to describe that validation failure.
     if not path.is_symlink() and path.is_file():
-        with path.open("rb") as stream:
-            digest = hashlib.file_digest(stream, "sha256").hexdigest()[:12]
+        stat = path.stat()
+        digest = _file_digest(str(path.resolve()), stat.st_size, stat.st_mtime_ns)
     return Provenance(str(path), step_name, tensor_key, digest, indices)
+
+
+@functools.lru_cache(maxsize=256)
+def _file_digest(path: str, size: int, mtime_ns: int) -> str:
+    """Hash each file once per run; a multi-GB local model may be cited by many findings."""
+    with open(path, "rb") as stream:
+        return hashlib.file_digest(stream, "sha256").hexdigest()[:12]
 
 
 def _add(
@@ -735,8 +752,15 @@ def _local_file(root: Path, filename: str, *, allow_directory: bool = False) -> 
 def _read_tensors(path: Path) -> dict[str, torch.Tensor]:
     if _is_lfs_pointer(path):
         raise ValueError("Git LFS pointer artifact contains no safetensors tensor data")
-    with safe_open(path, framework="pt", device="cpu") as buffers:
-        return {key: buffers.get_tensor(key) for key in buffers.keys()}
+    try:
+        with safe_open(path, framework="pt", device="cpu") as buffers:
+            return {key: buffers.get_tensor(key) for key in buffers.keys()}
+    except (OSError, ValueError):
+        raise
+    except Exception as exc:  # safetensors raises its own error type for corrupt files.
+        # A corrupt or truncated file is evidence about that one artifact. Report it as a
+        # ValueError so every caller degrades only the checks that need this file.
+        raise ValueError(f"Corrupt or truncated safetensors file {path.name}: {exc}") from exc
 
 
 def _validate_step_entry(entry: Any) -> None:
@@ -1106,6 +1130,22 @@ def _discover(root: Path, report: PreflightReport) -> list[tuple[Path, dict[str,
     return pipelines
 
 
+def _first(mask: torch.Tensor) -> torch.Tensor:
+    """Keep only the first MAX_EVIDENCE_ITEMS selected coordinates of a boolean mask."""
+    flat = mask.reshape(-1)
+    if int(flat.sum()) <= MAX_EVIDENCE_ITEMS:
+        return mask
+    keep = torch.zeros_like(flat)
+    keep[flat.nonzero().flatten()[:MAX_EVIDENCE_ITEMS]] = True
+    return keep.reshape(mask.shape)
+
+
+def _index_text(indices: list[int], total: int) -> str:
+    if total <= 16:
+        return str(indices)
+    return "[" + ", ".join(map(str, indices[:8])) + f", ... ({total} in total)]"
+
+
 def _buffer_finding(
     report: PreflightReport,
     check: str,
@@ -1118,15 +1158,17 @@ def _buffer_finding(
     extra: dict[str, Any],
     severity: Severity | None = None,
 ) -> None:
-    indices = mask.reshape(-1).nonzero().flatten().tolist()
-    if not indices:
+    selected = mask.reshape(-1).nonzero().flatten()
+    total = int(selected.numel())
+    if not total:
         return
+    indices = selected[:MAX_EVIDENCE_ITEMS].tolist()
     values = tensor.reshape(-1)[indices].tolist()
     _add(
         report,
         check,
         DiagnosticStatus.FAIL,
-        f"{key} has unsafe normalization buffer values at indices {indices}.",
+        f"{key} has unsafe normalization buffer values at indices {_index_text(indices, total)}.",
         {
             "step_index": step_index,
             "feature_key": key.rsplit(".", 1)[0],
@@ -1134,9 +1176,10 @@ def _buffer_finding(
             "tensor_slice": values,
             "tensor_shape": list(tensor.shape),
             "indexing": "flattened row-major",
+            "violating_count": total,
             **extra,
         },
-        _provenance(path, step_name, key, indices),
+        replace(_provenance(path, step_name, key, indices), violating_index_count=total),
         severity=severity,
     )
 
@@ -1447,16 +1490,18 @@ def _gain_probe_details(
     output = (probe - reference) / denominator
     if range_mode:
         baseline, output = 2 * baseline - 1, 2 * output - 1
+    shown = _first(selected)
     return {
         "probe_offset": 0.20,
         "probe_dtype": "float32",
         "probe_available": True,
         "probe_tensor_shape": list(reference.shape),
         "probe_is_synthetic": True,
-        "baseline_output_values": baseline[selected].tolist(),
-        "probe_reference_values": reference[selected].tolist(),
-        "probe_input_values": probe[selected].tolist(),
-        "probe_output_values": output[selected].tolist(),
+        "probe_output_max_abs": float(output[selected].abs().max()) if bool(selected.any()) else None,
+        "baseline_output_values": baseline[shown].tolist(),
+        "probe_reference_values": reference[shown].tolist(),
+        "probe_input_values": probe[shown].tolist(),
+        "probe_output_values": output[shown].tolist(),
     }
 
 
@@ -1474,14 +1519,17 @@ def _gain_finding(
         return
     _buffer_finding(report, "PATHOLOGICAL_STD_GAIN", path, name, index, key, tensor, mask, extra)
     finding = report.findings[-1]
-    maximum_gain = max(extra["effective_gains_with_eps"])
+    maximum_gain = extra.get("maximum_gain", max(extra["effective_gains_with_eps"]))
     assert finding.provenance is not None
+    indices = finding.provenance.violating_indices or []
     finding.summary = (
         f"Forward {extra['normalization_mode']} normalization has gain up to {maximum_gain:.8g}x "
-        f"at indices {finding.provenance.violating_indices}."
+        f"at indices {_index_text(indices, int(finding.details.get('violating_count', len(indices))))}."
     )
     if extra.get("probe_available"):
-        maximum_output = max(abs(value) for value in extra["probe_output_values"])
+        maximum_output = extra.get("probe_output_max_abs")
+        if maximum_output is None:
+            maximum_output = max(abs(value) for value in extra["probe_output_values"])
         finding.summary += f" A +0.20 float32 probe produces output magnitude up to {maximum_output:.8g}."
 
 
@@ -1993,7 +2041,7 @@ def _screen_normalizer_state(
                 extra.update(
                     {
                         "source_tensor_shape": list(available[stat].shape),
-                        "source_saved_values": available[stat].reshape(-1).tolist(),
+                        "source_saved_values": available[stat].reshape(-1)[:MAX_EVIDENCE_ITEMS].tolist(),
                         "broadcast_tensor_shape": list(tensor.shape),
                         "indexing": "flattened row-major broadcast normalization coordinates",
                     }
@@ -2013,7 +2061,7 @@ def _screen_normalizer_state(
                     if bool(reversed_bounds.any()):
                         reasons_invalid.append("reversed_interval")
                         extra["upper_buffer_key"] = f"{feature}.{required[1]}"
-                        extra["upper_values"] = upper.reshape(-1).tolist()
+                        extra["upper_values"] = upper.reshape(-1)[:MAX_EVIDENCE_ITEMS].tolist()
             _buffer_finding(
                 report,
                 "INVALID_NORMALIZATION_STATS",
@@ -2044,10 +2092,11 @@ def _screen_normalizer_state(
                         {
                             **extra,
                             "std_warn_threshold": threshold,
-                            "amplification_factors": (1 / saved[small]).tolist(),
+                            "amplification_factors": (1 / saved[_first(small)]).tolist(),
                             "gain_dtype": str(target_dtype).removeprefix("torch."),
                             "gain_formula": "1 / (std + eps)",
-                            "effective_gains_with_eps": effective_gain[small].tolist(),
+                            "effective_gains_with_eps": effective_gain[_first(small)].tolist(),
+                            "maximum_gain": float(effective_gain[small].max()) if bool(small.any()) else None,
                             **probe,
                         },
                     )
@@ -2121,14 +2170,15 @@ def _screen_normalizer_state(
                                 **extra,
                                 "std_warn_threshold": threshold,
                                 "upper_buffer_key": f"{feature}.{required[1]}",
-                                "upper_values": upper[small].tolist(),
-                                "saved_span_values": saved_span[small].tolist(),
-                                "amplification_factors": (2 / saved_span[small]).tolist(),
+                                "upper_values": upper[_first(small)].tolist(),
+                                "saved_span_values": saved_span[_first(small)].tolist(),
+                                "amplification_factors": (2 / saved_span[_first(small)]).tolist(),
                                 "gain_dtype": str(target_dtype).removeprefix("torch."),
                                 "gain_formula": f"2 / ({span_expression} + eps)"
                                 if legacy_additive_eps
                                 else f"2 / where({span_expression} == 0, eps, {span_expression})",
-                                "effective_gains_with_eps": gain[small].tolist(),
+                                "effective_gains_with_eps": gain[_first(small)].tolist(),
+                                "maximum_gain": float(gain[small].max()) if bool(small.any()) else None,
                                 **probe,
                             },
                         )
@@ -2498,11 +2548,95 @@ def _verified_legacy_values(
     return state_path, state, metadata, header
 
 
+# Embedded normalization buffers are 1-D vectors; anything larger is not a buffer to screen.
+_LOCAL_LEGACY_MAX_ELEMENTS = 1 << 20
+_SAFETENSORS_DTYPES = {"F16": 2, "BF16": 2, "F32": 4, "F64": 8}
+
+
+def _local_legacy_values(
+    root: Path,
+) -> tuple[Path, dict[str, torch.Tensor], dict[str, Any], dict[str, Any]] | None:
+    """Read only the embedded normalization buffers of a local legacy ``model.safetensors``.
+
+    The file's own safetensors header gives each buffer's exact byte range, so only those
+    bytes are read; neural weights are never loaded. The returned header/metadata mirror the
+    structure the Hub range reader produces, so the same screening code runs on both.
+    """
+    model = _local_file(root, "model.safetensors")
+    size = model.stat().st_size
+    with model.open("rb") as stream:
+        prefix = stream.read(8)
+        if len(prefix) != 8:
+            raise ValueError("model.safetensors is too short to contain a header")
+        header_len = int.from_bytes(prefix, "little")
+        if not 0 < header_len <= 100 * 1024 * 1024 or 8 + header_len > size:
+            raise ValueError("model.safetensors has an invalid header length")
+        raw_header = stream.read(header_len)
+        entries = json.loads(raw_header)
+        if not isinstance(entries, dict):
+            raise ValueError("model.safetensors header is not an object")
+        tensors: dict[str, Any] = {}
+        descriptors: dict[str, Any] = {}
+        state: dict[str, torch.Tensor] = {}
+        torch_dtypes = {
+            "F16": torch.float16,
+            "BF16": torch.bfloat16,
+            "F32": torch.float32,
+            "F64": torch.float64,
+        }
+        if not _legacy_buffer_keys(entries):
+            return None  # A modern checkpoint's weights file: nothing legacy to screen.
+        for key in _legacy_buffer_keys(entries):
+            entry = entries[key]
+            if not isinstance(entry, dict):
+                raise ValueError(f"Invalid header entry for {key}")
+            dtype, shape, offsets = entry.get("dtype"), entry.get("shape"), entry.get("data_offsets")
+            if dtype not in _SAFETENSORS_DTYPES or not isinstance(shape, list) or len(shape) > 1:
+                continue
+            count = shape[0] if shape else 1
+            start, end = offsets if isinstance(offsets, list) and len(offsets) == 2 else (-1, -1)
+            if (
+                not 0 <= count <= _LOCAL_LEGACY_MAX_ELEMENTS
+                or type(start) is not int
+                or end - start != count * _SAFETENSORS_DTYPES[dtype]
+                or 8 + header_len + end > size
+            ):
+                raise ValueError(f"Embedded buffer {key} has an inconsistent byte range")
+            stream.seek(8 + header_len + start)
+            payload = stream.read(end - start)
+            if len(payload) != end - start:
+                raise ValueError(f"Embedded buffer {key} is truncated")
+            state[key] = (
+                torch.frombuffer(bytearray(payload), dtype=torch_dtypes[dtype]).reshape(shape).clone()
+            )
+            tensors[key] = {"dtype": dtype, "shape": shape, "data_offsets": [start, end]}
+            descriptors[key] = {
+                **tensors[key],
+                "absolute_range": [8 + header_len + start, 8 + header_len + end - 1],
+                "payload_sha256": hashlib.sha256(payload).hexdigest(),
+            }
+    if not state:
+        raise ValueError("model.safetensors contains no 1-D legacy normalization buffers")
+    header = {"tensors": tensors, "header_len": header_len, "total_size": size, "source_file": model.name}
+    metadata = {
+        "source_file": model.name,
+        "tensors": descriptors,
+        "coverage_source": "local_model_safetensors_header",
+        "bytes_read": 8
+        + header_len
+        + sum(end - start for start, end in (t["data_offsets"] for t in tensors.values())),
+    }
+    return model, state, metadata, header
+
+
 def _screen_legacy_buffers(root: Path, report: PreflightReport, threshold: float) -> set[Path]:
     """Apply inspected legacy Normalize formulas to verified state/action values."""
     metadata_path = root / "legacy_normalization.json"
     header_path = root / "model.safetensors.header.json"
-    if not metadata_path.exists() or not header_path.exists():
+    local_model = not metadata_path.exists() and not header_path.exists()
+    if local_model and not (root / "model.safetensors").is_file():
+        return set()
+    if not local_model and (not metadata_path.exists() or not header_path.exists()):
         return set()
     numeric_checks = ("PATHOLOGICAL_STD_GAIN", "FP16_NON_FINITE_RISK", "DEAD_ACTION_DIMENSION")
 
@@ -2518,12 +2652,19 @@ def _screen_legacy_buffers(root: Path, report: PreflightReport, threshold: float
             )
 
     try:
-        state_path, state, metadata, header = _verified_legacy_values(root)
+        values = _local_legacy_values(root) if local_model else _verified_legacy_values(root)
+        if values is None:
+            return set()
+        state_path, state, metadata, header = values
         config = json.loads(_local_file(root, "config.json").read_text(encoding="utf-8"))
         features = _legacy_declared_features(config)
     except Exception as exc:
         unavailable(
-            f"Legacy normalization slices could not be verified: {exc}",
+            (
+                f"Local legacy normalization buffers could not be screened: {exc}"
+                if local_model
+                else f"Legacy normalization slices could not be verified: {exc}"
+            ),
             {"coverage_source": "legacy_tensor_ranges", "tensor_values_verified": False},
         )
         return set()
@@ -3053,12 +3194,40 @@ def run_preflight(
                     {"step_index": index},
                     _provenance(path, index),
                 )
-    _classify_unbound_base_stats(report)
-    _compare_action_stats(report, action_stats)
+
+    def isolated(stage: str, check: Callable[[], Any], provenance: Provenance | None = None) -> Any:
+        """One failing stage must not erase the findings of every other stage."""
+        try:
+            return check()
+        except Exception as exc:
+            _add(
+                report,
+                "CHECK_INCOMPLETE",
+                DiagnosticStatus.UNKNOWN,
+                f"The {stage} check could not finish: {type(exc).__name__}: {exc}",
+                {"stage": stage, "exception_type": type(exc).__name__, "tool_error": True},
+                provenance,
+                severity=Severity.WARNING,
+            )
+            return None
+
+    isolated("base-model statistics", lambda: _classify_unbound_base_stats(report))
+    isolated("action statistics", lambda: _compare_action_stats(report, action_stats))
     for config_path, config in pipelines:
-        _screen_native_normalization_chain(root, config_path, config, report, std_warn_threshold)
-    _screen_paired_relative_chain(root, report, std_warn_threshold)
-    screened.update(_screen_legacy_buffers(root, report, std_warn_threshold))
+        isolated(
+            "native normalization chain",
+            functools.partial(
+                _screen_native_normalization_chain, root, config_path, config, report, std_warn_threshold
+            ),
+            _provenance(config_path),
+        )
+    isolated(
+        "paired relative-action chain",
+        lambda: _screen_paired_relative_chain(root, report, std_warn_threshold),
+    )
+    screened.update(
+        isolated("legacy buffers", lambda: _screen_legacy_buffers(root, report, std_warn_threshold)) or set()
+    )
     # A filename alone cannot establish which feature, mode, or direction uses an orphan.
     for path in sorted(root.glob("*normalizer*.safetensors")):
         if path.resolve() not in screened and path.resolve() not in pointer_paths:

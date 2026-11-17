@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 from collections.abc import Callable
 from contextlib import ExitStack
@@ -18,19 +19,37 @@ from .hub_source import (
     parse_hub_reference,
     resolve_checkpoint,
 )
-from .models import DiagnosticFinding, DiagnosticStatus, PreflightReport, Severity
+from .models import (
+    EXIT_TOOL_ERROR,
+    DiagnosticFinding,
+    DiagnosticStatus,
+    PreflightReport,
+    Severity,
+    bounded_text,
+)
 from .preflight import _multi_dataset_action_prefixes, run_preflight
 from .temporal import run_temporal_audit
 from .trace import run_offline_trace
 
 
+def _positive_finite(value: str) -> float:
+    try:
+        number = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{value!r} is not a number") from None
+    if not math.isfinite(number) or number <= 0:
+        raise argparse.ArgumentTypeError(f"must be a positive, finite number, not {value}")
+    return number
+
+
 def _runner_error(stage: str, exc: Exception) -> DiagnosticFinding:
     return DiagnosticFinding(
         check_id="RUNNER_ERROR",
-        status=DiagnosticStatus.FAIL,
+        # A crash says nothing about the checkpoint, so it is not a FAIL; exit code 3 reports it.
+        status=DiagnosticStatus.UNKNOWN,
         severity=Severity.CRITICAL,
-        summary=f"{stage} failed: {type(exc).__name__}: {exc}",
-        details={"stage": stage, "exception_type": type(exc).__name__},
+        summary=f"Flinch could not finish the {stage} check: {type(exc).__name__}: {exc}",
+        details={"stage": stage, "exception_type": type(exc).__name__, "tool_error": True},
     )
 
 
@@ -250,7 +269,7 @@ def _print_report(report: PreflightReport) -> None:
         print(f"{status.value} ({len(findings)})")
         for finding in findings:
             advisory = " (WARNING)" if finding.severity is Severity.WARNING else ""
-            print(f"  [{finding.check_id}]{advisory} {finding.summary}")
+            print(f"  [{finding.check_id}]{advisory} {bounded_text(finding.summary)}")
             context = _finding_context(finding)
             if context:
                 print(f"    {context}")
@@ -321,11 +340,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--std-threshold",
-        type=float,
+        type=_positive_finite,
         default=1e-4,
         help="Warn below this saved standard deviation (default: 1e-4)",
     )
     args = parser.parse_args(argv)
+    if args.graph is not None and args.graph.suffix.lower() not in {".json", ".mmd", ".md"}:
+        parser.error(f"--graph must end in .json, .mmd or .md, not {args.graph.suffix or 'nothing'}")
     for option in ("policy", "baseline"):
         value = getattr(args, option)
         if value is None:
@@ -355,7 +376,7 @@ def main(argv: list[str] | None = None) -> int:
             return _run_resolved(args, policy, baseline)
     except HubSourceError as exc:
         print(f"flinch: {exc}", file=sys.stderr)
-        return 1
+        return EXIT_TOOL_ERROR
 
 
 def _hub_snapshot_finding(resolved: ResolvedCheckpoint, role: str) -> DiagnosticFinding:
@@ -415,7 +436,7 @@ def _run_resolved(
             _write_report(args.report, report)
         except Exception as exc:
             print(f"Could not write report {args.report}: {exc}", file=sys.stderr)
-            return 1
+            return EXIT_TOOL_ERROR
     if args.graph is not None:
         try:
             from .graph import build_processor_graph, write_processor_graph
@@ -425,8 +446,8 @@ def _run_resolved(
             print(f"Processor lineage graph: {args.graph}")
         except Exception as exc:
             print(f"Could not write graph {args.graph}: {exc}", file=sys.stderr)
-            return 1
-    return 1 if report.has_failures() else 0
+            return EXIT_TOOL_ERROR
+    return report.exit_code()
 
 
 if __name__ == "__main__":

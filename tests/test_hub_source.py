@@ -146,7 +146,9 @@ def test_unreachable_hub_repository_is_a_clean_error(
 
     monkeypatch.setattr(hub_scanner, "HfApi", lambda **kwargs: MissingRepoApi())
 
-    assert main(["--policy", "hf://owner/missing"]) == 1
+    assert (
+        main(["--policy", "hf://owner/missing"]) == 3
+    )  # Flinch could not fetch: a tool error, not a finding.
     captured = capsys.readouterr()
     assert "Could not fetch the processor artifacts of hf://owner/missing" in captured.err
     assert "404 Repository Not Found" in captured.err
@@ -184,7 +186,9 @@ def test_gated_and_private_hub_snapshots_never_reach_diagnostics(
     monkeypatch.setattr(hub_scanner, "download_lightweight_snapshot", download)
     monkeypatch.setattr(cli, "run_checks", no_diagnostics)
 
-    assert main(["--policy", "hf://owner/clean_act_modern"]) == 1
+    assert (
+        main(["--policy", "hf://owner/clean_act_modern"]) == 3
+    )  # Flinch could not fetch: a tool error, not a finding.
 
     captured = capsys.readouterr()
     assert "Gated or private repositories are not supported" in captured.err
@@ -219,7 +223,9 @@ def test_hub_snapshot_resource_failures_are_clean_errors(
     monkeypatch.setattr(hub_scanner, "download_lightweight_snapshot", fail_download)
     monkeypatch.setattr(cli, "run_checks", no_diagnostics)
 
-    assert main(["--policy", "hf://owner/checkpoint"]) == 1
+    assert (
+        main(["--policy", "hf://owner/checkpoint"]) == 3
+    )  # Flinch could not fetch: a tool error, not a finding.
 
     captured = capsys.readouterr()
     assert "Could not fetch the processor artifacts of hf://owner/checkpoint" in captured.err

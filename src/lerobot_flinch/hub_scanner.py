@@ -9,12 +9,16 @@ import json
 import math
 import ntpath
 import posixpath
+import random
 import re
+import socket
 import tempfile
+import time
 from collections.abc import Callable, Iterable
 from datetime import datetime, timezone
 from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
 from typing import Any, cast
+from urllib.error import URLError
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
@@ -26,6 +30,60 @@ from safetensors.torch import save_file
 from .models import DiagnosticFinding, DiagnosticStatus, Severity
 from .preflight import _local_file, _verified_legacy_values, run_preflight
 from .temporal import run_temporal_audit
+
+# Transient Hub failures (dropped connections, timeouts, HTTP 429 and 5xx) are retried with
+# exponential backoff and full jitter. Missing, private or gated repos (4xx) are not retried.
+RETRY_ATTEMPTS = 4
+RETRY_BASE_SECONDS = 0.5
+RETRY_MAX_SECONDS = 8.0
+_sleep = time.sleep  # Patched in tests.
+_NEVER_RETRY = {
+    "OfflineModeIsEnabled",
+    "RepositoryNotFoundError",
+    "GatedRepoError",
+    "RevisionNotFoundError",
+    "EntryNotFoundError",
+    "LocalEntryNotFoundError",
+}
+
+
+def _http_status(exc: BaseException) -> int | None:
+    status = getattr(getattr(exc, "response", None), "status_code", getattr(exc, "code", None))
+    return status if isinstance(status, int) else None
+
+
+def _is_transient(exc: BaseException) -> bool:
+    if any(cls.__name__ in _NEVER_RETRY for cls in type(exc).__mro__):
+        return False
+    status = _http_status(exc)
+    if status is not None:
+        return status == 429 or 500 <= status < 600
+    return isinstance(exc, (ConnectionError, TimeoutError, URLError, socket.timeout))
+
+
+def _retry_after(exc: BaseException) -> float | None:
+    headers = getattr(getattr(exc, "response", None), "headers", None) or getattr(exc, "headers", None)
+    try:
+        value = headers.get("Retry-After") if headers is not None else None
+        return min(float(value), RETRY_MAX_SECONDS) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def with_retries(call: Callable[[], Any], *, attempts: int = RETRY_ATTEMPTS) -> Any:
+    """Run one Hub request, retrying transient failures with backoff and jitter."""
+    for attempt in range(attempts):
+        try:
+            return call()
+        except Exception as exc:
+            if attempt == attempts - 1 or not _is_transient(exc):
+                raise
+            delay = _retry_after(exc)
+            if delay is None:
+                delay = random.uniform(0, min(RETRY_MAX_SECONDS, RETRY_BASE_SECONDS * 2**attempt))
+            _sleep(delay)
+    raise AssertionError("unreachable")
+
 
 MAX_DOWNLOAD_BYTES = 5 * 1024 * 1024
 MAX_HEADER_BYTES = 4 * 1024 * 1024
@@ -164,7 +222,7 @@ def _range_read(url: str, start: int, size: int, opener: Callable[..., Any]) -> 
             "User-Agent": "lerobot-flinch/metadata-scanner",
         },
     )
-    with opener(request, timeout=20) as response:
+    with with_retries(lambda: opener(request, timeout=20)) as response:
         status = response.status
         if status not in (200, 206):
             raise ValueError(f"Unexpected HTTP status for bounded header request: {status}")
@@ -280,7 +338,7 @@ def _strict_tensor_range_read(
             "User-Agent": "lerobot-flinch/normalization-range-scanner",
         },
     )
-    with opener(request, timeout=20) as response:
+    with with_retries(lambda: opener(request, timeout=20)) as response:
         if response.status != 206:
             raise _LegacyRangeError(
                 "Legacy normalization tensors require HTTP 206; the response body was not read"
@@ -598,7 +656,9 @@ def download_lightweight_snapshot(
     manifest["requested_revision"] = revision
     try:
         revision_option = {"revision": revision} if revision is not None else {}
-        info = api.model_info(repo_id, files_metadata=True, timeout=20, **revision_option)
+        info = with_retries(
+            lambda: api.model_info(repo_id, files_metadata=True, timeout=20, **revision_option)
+        )
         manifest["repo_access"] = {
             "private": bool(getattr(info, "private", False)),
             "gated": getattr(info, "gated", False),
@@ -610,7 +670,10 @@ def download_lightweight_snapshot(
             raise ValueError("The Hub did not return an immutable revision")
         manifest["revision"] = revision
         files = sorted(
-            {_safe_name(name).as_posix() for name in api.list_repo_files(repo_id, revision=revision)}
+            {
+                _safe_name(name).as_posix()
+                for name in with_retries(lambda: api.list_repo_files(repo_id, revision=revision))
+            }
         )
         sizes = {sibling.rfilename: sibling.size for sibling in info.siblings or []}
         manifest.update({"repo_files": files, "repo_files_complete": True, "repo_file_sizes": sizes})
@@ -653,8 +716,10 @@ def download_lightweight_snapshot(
         size = sizes.get(filename)
         try:
             if size is None:
-                size = get_hf_file_metadata(
-                    hf_hub_url(repo_id, filename, revision=revision), token=False, timeout=15
+                size = with_retries(
+                    lambda: get_hf_file_metadata(
+                        hf_hub_url(repo_id, filename, revision=revision), token=False, timeout=15
+                    )
                 ).size
             if type(size) is not int or size < 0 or size > MAX_DOWNLOAD_BYTES:
                 skip(filename, "unknown_size_or_exceeds_5_MiB_limit", size, critical=critical)
@@ -663,12 +728,14 @@ def download_lightweight_snapshot(
                 skip(filename, "snapshot_byte_budget", size, critical=critical)
                 return
             downloaded = Path(
-                hf_hub_download(
-                    repo_id=repo_id,
-                    filename=filename,
-                    revision=revision,
-                    local_dir=root,
-                    token=False,
+                with_retries(
+                    lambda: hf_hub_download(
+                        repo_id=repo_id,
+                        filename=filename,
+                        revision=revision,
+                        local_dir=root,
+                        token=False,
+                    )
                 )
             )
             if not downloaded.is_file() or not downloaded.resolve().is_relative_to(root):

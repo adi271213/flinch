@@ -93,7 +93,7 @@ Every finding gets one of four labels:
 | `CONFLICT` | Two files in the checkpoint disagree with each other. |
 | `UNKNOWN` | Flinch couldn't check this, so it won't pretend it did. |
 
-Exit code is `1` for `FAIL` or `CONFLICT`. With `--baseline`, missing required comparison coverage also exits `1`. `--strict` additionally rejects warnings and non-exempt coverage `UNKNOWN`s. Informational physical-semantics `UNKNOWN`s explicitly marked as exempt remain nonblocking. Otherwise the exit code is `0`; bad arguments exit `2`.
+Exit codes: `0` passed, `1` the checkpoint has a problem (`FAIL` or `CONFLICT`, or anything `--strict` or `--baseline` treats as blocking), `2` you passed a bad argument, `3` Flinch itself couldn't finish (a crash, the Hub was unreachable, or an output couldn't be written). If a real problem is found, `1` wins over `3`.
 
 Flinch never guesses physical units. A tensor's shape can't tell you whether a joint is in radians or degrees, so that stays `UNKNOWN` unless you declare it with `--metadata`.
 

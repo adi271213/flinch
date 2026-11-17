@@ -380,14 +380,16 @@ def test_runner_records_unexpected_stage_error_and_continues_to_temporal(
 
     monkeypatch.setattr(cli_module, "run_preflight", injected_preflight_error)
     report = run_checks(checkpoint)
-    runner_failures = _find(report.findings, "RUNNER_ERROR", DiagnosticStatus.FAIL)
-    assert len(runner_failures) == 1
-    assert runner_failures[0].details["stage"] == "preflight"
+    # A crash is a tool error, not evidence about the checkpoint: UNKNOWN, and exit code 3.
+    runner_errors = _find(report.findings, "RUNNER_ERROR", DiagnosticStatus.UNKNOWN)
+    assert len(runner_errors) == 1
+    assert runner_errors[0].details["stage"] == "preflight"
+    assert runner_errors[0].details["tool_error"] is True
     assert _find(report.findings, "TEMPORAL_ANCHOR_MISMATCH", DiagnosticStatus.PASS)
-    assert report.has_failures()
+    assert report.exit_code() == 3
 
     report_path = tmp_path / "runner_error.json"
-    assert main(["--policy", str(checkpoint), "--report", str(report_path)]) == 1
+    assert main(["--policy", str(checkpoint), "--report", str(report_path)]) == 3
     saved = json.loads(report_path.read_text())
     assert any(finding["check_id"] == "RUNNER_ERROR" for finding in saved["findings"])
 
@@ -520,7 +522,7 @@ def test_cli_refuses_to_overwrite_an_audited_artifact(
     artifact = checkpoint / "preprocessor_config.json"
     original = artifact.read_bytes()
     exit_code = main(["--policy", str(checkpoint), "--report", str(artifact)])
-    assert exit_code == 1
+    assert exit_code == 3
     assert artifact.read_bytes() == original
     assert "Refusing to overwrite an audited artifact" in capsys.readouterr().err
 

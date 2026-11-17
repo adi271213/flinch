@@ -258,7 +258,7 @@ def test_unavailable_repository_gets_one_line_error(
 
     monkeypatch.setattr(hub_scanner, "HfApi", lambda **kwargs: UnavailableApi())
 
-    assert main(["--policy", "hf://owner/missing@v2"]) == 1
+    assert main(["--policy", "hf://owner/missing@v2"]) == 3
     err = capsys.readouterr().err
     assert err.count("\n") == 1
     assert "Repository hf://owner/missing@v2 was not found" in err

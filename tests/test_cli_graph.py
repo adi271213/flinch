@@ -58,16 +58,18 @@ def test_cli_graph_refuses_to_overwrite_checkpoint_artifact(checkpoints, capsys)
     checkpoint = checkpoints["clean_act_modern"]
     artifact = checkpoint / "preprocessor_config.json"
     original = artifact.read_bytes()
-    assert main(["--policy", str(checkpoint), "--graph", str(artifact)]) == 1
+    assert main(["--policy", str(checkpoint), "--graph", str(artifact)]) == 3
     assert artifact.read_bytes() == original
     assert "Could not write graph" in capsys.readouterr().err
 
 
 def test_cli_graph_rejects_unsupported_export_format(checkpoints, tmp_path, capsys):
     output = tmp_path / "graph.svg"
-    assert main(["--policy", str(checkpoints["clean_act_modern"]), "--graph", str(output)]) == 1
+    with pytest.raises(SystemExit) as exit_info:
+        main(["--policy", str(checkpoints["clean_act_modern"]), "--graph", str(output)])
+    assert exit_info.value.code == 2
     assert not output.exists()
-    assert "Could not write graph" in capsys.readouterr().err
+    assert "--graph must end in .json, .mmd or .md" in capsys.readouterr().err
 
 
 def test_cli_forwards_explicit_chronology_to_graph(checkpoints, tmp_path, monkeypatch):
