@@ -12,12 +12,30 @@ python -m venv .venv
 # PowerShell: .\.venv\Scripts\Activate.ps1
 python -m pip install -e ".[test,dev]"
 python -m ruff check src scripts tests
+python -m ruff format --check src scripts tests
+python -m mypy
 python -m pytest -q
 ```
 
 The test suite generates small checkpoints with native LeRobot classes. It does not require downloaded neural weights, `.lerobot_ref`, a simulator, or hardware. Installed-release tests must not depend on an editable install or inherited `PYTHONPATH`. Test subprocesses that explicitly exercise source-tree imports use `tests/subprocess_env.py`.
 
-Ruff checks syntax, undefined/unused names, import order, and basic Python errors. There is no repository-wide type-checking gate; type annotations are checked through review and relevant runtime tests. Avoid formatting unrelated code or adding broad lint suppressions.
+Ruff checks syntax, undefined/unused names, import order, and basic Python errors. Apply formatting with `python -m ruff format src scripts tests`. Mypy checks all nine runtime modules in strict mode; third-party imports and dynamic tensor/JSON interfaces remain explicit boundaries. Native API and feature-shape behavior are verified by pytest. Do not add broad lint or typing suppressions to hide an unsupported contract.
+
+## Branches, commits and pull requests
+
+Create a focused branch with a descriptive name, such as `fix/stat-namespace` or `docs/installation`. Agent-created branches use the `codex/` prefix. Keep each pull request limited to one demonstrated problem or coherent change.
+
+Use [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/), for example:
+
+```text
+fix: reject conflicting processor aliases
+feat: export processor lineage as Mermaid
+docs: explain conditional legacy FP16 findings
+```
+
+Open a pull request against `main` and complete the repository template. Explain the trigger and before/after behavior, provide the exact validation results, and identify any remaining coverage limits. Link a related issue when there is one. Changes to diagnostic acceptance or CLI exit behavior need a regression test and a healthy control.
+
+Review the final diff for unrelated formatting, generated files, private evidence and accidental API changes. Use your legitimate Git identity. Preserve authentic attribution and existing published history; do not force-push shared branches as part of cleanup.
 
 ## Diagnostic changes
 
@@ -53,4 +71,8 @@ Keep source under `src/lerobot_preflight`, regression tests under `tests`, sourc
 
 Use your legitimate Git identity and preserve authentic third-party attribution. Do not rewrite published history as part of cleanup. Keep changes focused and explain the verified problem, resulting behavior, and actual validation in the pull request.
 
-The project has no selected license yet. Contributions and publication terms require the repository owner's decision before an open-source release.
+See [Git maintenance](docs/git-maintenance.md) for the completed history review and commands to organize future unpublished work.
+
+## License
+
+The project uses the [MIT License](LICENSE). Submit only changes you have the right to contribute under those terms, and retain legally required third-party notices.

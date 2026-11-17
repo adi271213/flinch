@@ -7,7 +7,7 @@ import math
 from collections.abc import Mapping
 from copy import deepcopy
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import torch
@@ -31,9 +31,15 @@ from lerobot.processor import (
 try:
     from lerobot.processor.rename_processor import rename_keys
 except ImportError:
-    def rename_keys(mapping, rename_map):
+
+    def rename_keys[T](mapping: Mapping[str, T], rename_map: Mapping[str, str] | None) -> dict[str, T]:
         """Use the installed native rename step when its helper is unavailable."""
-        return RenameObservationsProcessorStep(rename_map=rename_map or {}).observation(dict(mapping))
+        return cast(
+            dict[str, T],
+            RenameObservationsProcessorStep(rename_map=rename_map or {}).observation(dict(mapping)),
+        )
+
+
 from lerobot.utils.constants import (
     OBS_LANGUAGE_ATTENTION_MASK,
     OBS_LANGUAGE_SUBTASK_ATTENTION_MASK,
@@ -54,14 +60,20 @@ from .preflight import (
 
 _NORMALIZERS = (NormalizerProcessorStep, UnnormalizerProcessorStep)
 _TRACE_CHECKS = ("SILENT_STEP_BYPASS", "EMPIRICAL_GAIN_EXPLOSION", "RUNTIME_NON_FINITE")
-_LANGUAGE_OUTPUT_KEYS = frozenset((OBS_LANGUAGE_TOKENS, OBS_LANGUAGE_ATTENTION_MASK,
-                                  OBS_LANGUAGE_SUBTASK_TOKENS, OBS_LANGUAGE_SUBTASK_ATTENTION_MASK))
+_LANGUAGE_OUTPUT_KEYS = frozenset(
+    (
+        OBS_LANGUAGE_TOKENS,
+        OBS_LANGUAGE_ATTENTION_MASK,
+        OBS_LANGUAGE_SUBTASK_TOKENS,
+        OBS_LANGUAGE_SUBTASK_ATTENTION_MASK,
+    )
+)
 
 
 def _declares_class(entry: dict[str, Any], registry_name: str, cls: type) -> bool:
     """Match the same registry-first declaration precedence as the native loader."""
     if "registry_name" in entry:
-        return entry["registry_name"] == registry_name
+        return cast(bool, entry["registry_name"] == registry_name)
     return entry.get("class") == f"{cls.__module__}.{cls.__name__}"
 
 
@@ -72,9 +84,9 @@ def _tokenizer_entry(entry: dict[str, Any]) -> bool:
 def _trace_step_class(entry: dict[str, Any], numeric_only: bool) -> type | None:
     if numeric_only:
         if _tokenizer_entry(entry):
-            return IdentityProcessorStep
+            return cast(type, IdentityProcessorStep)
         if _declares_class(entry, "smolvla_new_line_processor", NewLineTaskProcessorStep):
-            return NewLineTaskProcessorStep
+            return cast(type, NewLineTaskProcessorStep)
     return _step_class(entry)
 
 
@@ -88,14 +100,20 @@ def _token_dependencies(entry: dict[str, Any]) -> list[str]:
     """
     cls = _trace_step_class(entry, True)
     config = entry.get("config", {})
-    if cls in (IdentityProcessorStep, DeviceProcessorStep, AddBatchDimensionProcessorStep,
-               NewLineTaskProcessorStep):
+    if cls in (
+        IdentityProcessorStep,
+        DeviceProcessorStep,
+        AddBatchDimensionProcessorStep,
+        NewLineTaskProcessorStep,
+    ):
         return []
     if cls in _NORMALIZERS:
         modes = config.get("norm_map", {})
-        return sorted(key for key, feature in config.get("features", {}).items()
-                      if key in _LANGUAGE_OUTPUT_KEYS
-                      and modes.get(feature.get("type"), "IDENTITY") != "IDENTITY")
+        return sorted(
+            key
+            for key, feature in config.get("features", {}).items()
+            if key in _LANGUAGE_OUTPUT_KEYS and modes.get(feature.get("type"), "IDENTITY") != "IDENTITY"
+        )
     if cls is RenameObservationsProcessorStep:
         return sorted(set(config.get("rename_map", {})) & _LANGUAGE_OUTPUT_KEYS)
 
@@ -113,7 +131,10 @@ def _token_dependencies(entry: dict[str, Any]) -> list[str]:
 
 class _TraceLoadError(Exception):
     def __init__(
-        self, status: DiagnosticStatus, summary: str, details: dict[str, Any] | None = None,
+        self,
+        status: DiagnosticStatus,
+        summary: str,
+        details: dict[str, Any] | None = None,
         provenance: Provenance | None = None,
     ) -> None:
         super().__init__(summary)
@@ -124,8 +145,11 @@ class _TraceLoadError(Exception):
 
 
 def _step_provenance(
-    config_path: Path, config: dict[str, Any], step_index: int,
-    tensor_key: str, indices: list[int] | None = None,
+    config_path: Path,
+    config: dict[str, Any],
+    step_index: int,
+    tensor_key: str,
+    indices: list[int] | None = None,
 ) -> Provenance:
     entry = config["steps"][step_index]
     cls = _step_class(entry)
@@ -134,8 +158,10 @@ def _step_provenance(
 
 
 def _load_processor_pair(
-    root: Path, *, numeric_only: bool = False,
-) -> tuple[tuple[Any, Path, dict], tuple[Any, Path, dict]]:
+    root: Path,
+    *,
+    numeric_only: bool = False,
+) -> tuple[tuple[Any, Path, dict[str, Any]], tuple[Any, Path, dict[str, Any]]]:
     """Load a local native pair only after inspecting every constructor and path.
 
     Each returned tuple contains the native pipeline, JSON path, and saved config.
@@ -146,15 +172,16 @@ def _load_processor_pair(
     root = root.resolve()
     if not root.is_dir():
         raise _TraceLoadError(DiagnosticStatus.FAIL, "Checkpoint directory does not exist.")
-    candidates: dict[str, list[tuple[Path, dict]]] = {"pre": [], "post": []}
+    candidates: dict[str, list[tuple[Path, dict[str, Any]]]] = {"pre": [], "post": []}
     for path in sorted(root.glob("*.json")):
         try:
             _local_file(root, path.name)
             config = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError) as exc:
             if path.name in _CONFIG_NAMES:
-                raise _TraceLoadError(DiagnosticStatus.FAIL, f"Cannot read processor JSON: {exc}",
-                                      provenance=_provenance(path)) from exc
+                raise _TraceLoadError(
+                    DiagnosticStatus.FAIL, f"Cannot read processor JSON: {exc}", provenance=_provenance(path)
+                ) from exc
             continue
         if isinstance(config, dict) and isinstance(config.get("steps"), list):
             role = _role(path, config)
@@ -164,12 +191,15 @@ def _load_processor_pair(
     for role in ("pre", "post"):
         entries = candidates[role]
         if not entries:
-            raise _TraceLoadError(DiagnosticStatus.UNKNOWN,
-                                  f"A modern {role}processor could not be identified locally.")
+            raise _TraceLoadError(
+                DiagnosticStatus.UNKNOWN, f"A modern {role}processor could not be identified locally."
+            )
         if any(config != entries[0][1] for _, config in entries[1:]):
-            raise _TraceLoadError(DiagnosticStatus.CONFLICT,
-                                  f"Multiple {role}processor JSONs disagree.",
-                                  {"processor_files": [str(path) for path, _ in entries]})
+            raise _TraceLoadError(
+                DiagnosticStatus.CONFLICT,
+                f"Multiple {role}processor JSONs disagree.",
+                {"processor_files": [str(path) for path, _ in entries]},
+            )
         selected.append(entries[0])
 
     # Gate the entire pair before constructing even its first step.
@@ -180,30 +210,47 @@ def _load_processor_pair(
                 _validate_step_entry(entry)
                 cls = _trace_step_class(entry, numeric_only)
             except (TypeError, ValueError) as exc:
-                raise _TraceLoadError(DiagnosticStatus.FAIL, f"Invalid step declaration: {exc}",
-                                      {"step_index": index}, _provenance(path, index)) from exc
-            dependencies = _token_dependencies(entry) if numeric_only and stubbed_indices and isinstance(entry, dict) else []
+                raise _TraceLoadError(
+                    DiagnosticStatus.FAIL,
+                    f"Invalid step declaration: {exc}",
+                    {"step_index": index},
+                    _provenance(path, index),
+                ) from exc
+            dependencies = (
+                _token_dependencies(entry)
+                if numeric_only and stubbed_indices and isinstance(entry, dict)
+                else []
+            )
             if dependencies:
                 raise _TraceLoadError(
                     DiagnosticStatus.UNKNOWN,
                     "A downstream token-consuming step cannot be verified after language tokenization was stubbed.",
-                    {"step_index": index, "step": entry, "token_keys": dependencies,
-                     "stubbed_tokenizer_step_indices": stubbed_indices,
-                     "numeric_subpath_coverage": "not executed", "language_coverage_verified": False},
+                    {
+                        "step_index": index,
+                        "step": entry,
+                        "token_keys": dependencies,
+                        "stubbed_tokenizer_step_indices": stubbed_indices,
+                        "numeric_subpath_coverage": "not executed",
+                        "language_coverage_verified": False,
+                    },
                     _provenance(path, index),
                 )
             if cls is None:
-                raise _TraceLoadError(DiagnosticStatus.UNKNOWN,
-                                      "An uninspected processor step prevents safe offline execution.",
-                                      {"step_index": index, "step": entry}, _provenance(path, index))
+                raise _TraceLoadError(
+                    DiagnosticStatus.UNKNOWN,
+                    "An uninspected processor step prevents safe offline execution.",
+                    {"step_index": index, "step": entry},
+                    _provenance(path, index),
+                )
             try:
                 if entry.get("state_file") is not None:
                     _local_file(root, entry["state_file"])
                 for filename in entry.get("artifacts", {}).values():
                     _local_file(root, filename, allow_directory=True)
             except (OSError, ValueError, TypeError, AttributeError) as exc:
-                raise _TraceLoadError(DiagnosticStatus.FAIL, str(exc), {"step_index": index},
-                                      _provenance(path, cls.__name__)) from exc
+                raise _TraceLoadError(
+                    DiagnosticStatus.FAIL, str(exc), {"step_index": index}, _provenance(path, cls.__name__)
+                ) from exc
             if numeric_only and _tokenizer_entry(entry):
                 stubbed_indices.append(index)
     loaded = []
@@ -213,7 +260,7 @@ def _load_processor_pair(
         substituted = False
         for entry in config["steps"]:
             cls = _trace_step_class(entry, numeric_only)
-            if cls in (*_NORMALIZERS, DeviceProcessorStep):
+            if cls is not None and cls in (*_NORMALIZERS, DeviceProcessorStep):
                 overrides[entry.get("registry_name", cls.__name__)] = {"device": "cpu"}
         if numeric_only:
             for index, entry in enumerate(config["steps"]):
@@ -226,46 +273,72 @@ def _load_processor_pair(
         try:
             if substituted:
                 state = {
-                    entry["state_file"].removesuffix(".safetensors"): _read_tensors(_local_file(root, entry["state_file"]))
-                    for entry in sanitized["steps"] if "state_file" in entry
+                    entry["state_file"].removesuffix(".safetensors"): _read_tensors(
+                        _local_file(root, entry["state_file"])
+                    )
+                    for entry in sanitized["steps"]
+                    if "state_file" in entry
                 }
                 pipeline = PolicyProcessorPipeline.from_config(
-                    sanitized, state_dict=state, overrides=overrides,
-                    to_transition=batch_to_transition, to_output=transition_to_batch,
+                    sanitized,
+                    state_dict=state,
+                    overrides=overrides,
+                    to_transition=batch_to_transition,
+                    to_output=transition_to_batch,
                 )
             else:
                 pipeline = PolicyProcessorPipeline.from_pretrained(
-                    path, config_filename=path.name, local_files_only=True, overrides=overrides,
-                    to_transition=batch_to_transition, to_output=transition_to_batch,
+                    path,
+                    config_filename=path.name,
+                    local_files_only=True,
+                    overrides=overrides,
+                    to_transition=batch_to_transition,
+                    to_output=transition_to_batch,
                 )
         except Exception as exc:
-            raise _TraceLoadError(DiagnosticStatus.FAIL, f"Native processor loading failed: {exc}",
-                                  provenance=_provenance(path)) from exc
+            raise _TraceLoadError(
+                DiagnosticStatus.FAIL, f"Native processor loading failed: {exc}", provenance=_provenance(path)
+            ) from exc
         loaded.append((pipeline, path, config))
     relative = [step for step in loaded[0][0].steps if isinstance(step, RelativeActionsProcessorStep)]
     absolute = [step for step in loaded[1][0].steps if isinstance(step, AbsoluteActionsProcessorStep)]
     if len(relative) > 1 and any(step.enabled for step in absolute):
-        raise _TraceLoadError(DiagnosticStatus.UNKNOWN, "Multiple relative steps make the absolute anchor ambiguous.")
+        raise _TraceLoadError(
+            DiagnosticStatus.UNKNOWN, "Multiple relative steps make the absolute anchor ambiguous."
+        )
     if len(relative) == 1:
         for step in absolute:
             step.relative_step = relative[0]
     return loaded[0], loaded[1]
 
 
-def _language_stub_notes(artifact: tuple[Any, Path, dict], role: str) -> list[DiagnosticFinding]:
+def _language_stub_notes(artifact: tuple[Any, Path, dict[str, Any]], role: str) -> list[DiagnosticFinding]:
     pipeline, path, config = artifact
-    return [DiagnosticFinding(
-        "OFFLINE_LANGUAGE_TOKENIZATION", DiagnosticStatus.UNKNOWN, Severity.INFO,
-        "Numeric state/action subpaths were traced with native IdentityProcessorStep replacing language tokenization; "
-        "language tokenization and downstream token-dependent behavior remain unverified.",
-        {"pipeline_role": role, "step_index": index, "original_step_class": "TokenizerProcessorStep",
-         "original_registry_name": entry.get("registry_name"), "replacement_step_class": "IdentityProcessorStep",
-         "numeric_only": True, "language_coverage_verified": False, "numeric_steps_real": True,
-         "downstream_token_consumers_checked": True, "downstream_token_consumers": [],
-         "coverage_scope": "numeric state/action subpaths only"},
-        _provenance(path, "TokenizerProcessorStep"),
-    ) for index, entry in enumerate(config["steps"])
-        if _tokenizer_entry(entry) and isinstance(pipeline.steps[index], IdentityProcessorStep)]
+    return [
+        DiagnosticFinding(
+            "OFFLINE_LANGUAGE_TOKENIZATION",
+            DiagnosticStatus.UNKNOWN,
+            Severity.INFO,
+            "Numeric state/action subpaths were traced with native IdentityProcessorStep replacing language tokenization; "
+            "language tokenization and downstream token-dependent behavior remain unverified.",
+            {
+                "pipeline_role": role,
+                "step_index": index,
+                "original_step_class": "TokenizerProcessorStep",
+                "original_registry_name": entry.get("registry_name"),
+                "replacement_step_class": "IdentityProcessorStep",
+                "numeric_only": True,
+                "language_coverage_verified": False,
+                "numeric_steps_real": True,
+                "downstream_token_consumers_checked": True,
+                "downstream_token_consumers": [],
+                "coverage_scope": "numeric state/action subpaths only",
+            },
+            _provenance(path, "TokenizerProcessorStep"),
+        )
+        for index, entry in enumerate(config["steps"])
+        if _tokenizer_entry(entry) and isinstance(pipeline.steps[index], IdentityProcessorStep)
+    ]
 
 
 def _sample(path: Path) -> dict[str, Any]:
@@ -283,7 +356,10 @@ def _sample(path: Path) -> dict[str, Any]:
 
 
 def _missing_sample_features(
-    root: Path, artifact: tuple[Any, Path, dict], batch: dict[str, Any], sample_path: Path,
+    root: Path,
+    artifact: tuple[Any, Path, dict[str, Any]],
+    batch: dict[str, Any],
+    sample_path: Path,
 ) -> list[DiagnosticFinding]:
     """Check numeric contracts before execution, following native key renames only.
 
@@ -292,20 +368,27 @@ def _missing_sample_features(
     checks. Tensors are neither normalized nor otherwise transformed here.
     """
     pipeline, config_path, config = artifact
-    raw = {key: key for key, tensor in batch.items()
-           if key.startswith("observation.") and isinstance(tensor, torch.Tensor)}
+    raw = {
+        key: key
+        for key, tensor in batch.items()
+        if key.startswith("observation.") and isinstance(tensor, torch.Tensor)
+    }
     available = raw.copy()
     missing: dict[str, dict[str, Any]] = {}
 
     def require(key: str, index: int | None, declaration: Path) -> None:
         if key in available:
             return
-        missing.setdefault(key, {
-            "feature_key": key, "step_index": index,
-            "step_class": type(pipeline.steps[index]).__name__ if index is not None else None,
-            "available_numeric_observation_keys_at_step": sorted(available),
-            "declaration_provenance": _provenance(declaration, index, key).to_dict(),
-        })
+        missing.setdefault(
+            key,
+            {
+                "feature_key": key,
+                "step_index": index,
+                "step_class": type(pipeline.steps[index]).__name__ if index is not None else None,
+                "available_numeric_observation_keys_at_step": sorted(available),
+                "declaration_provenance": _provenance(declaration, index, key).to_dict(),
+            },
+        )
 
     for index, step in enumerate(pipeline.steps):
         if isinstance(step, RenameObservationsProcessorStep):
@@ -316,7 +399,10 @@ def _missing_sample_features(
                     continue
                 if step.normalize_observation_keys is not None and key not in step.normalize_observation_keys:
                     continue
-                if step.norm_map.get(feature.type, NormalizationMode.IDENTITY) is not NormalizationMode.IDENTITY:
+                if (
+                    step.norm_map.get(feature.type, NormalizationMode.IDENTITY)
+                    is not NormalizationMode.IDENTITY
+                ):
                     require(key, index, config_path)
         elif isinstance(step, RelativeActionsProcessorStep) and step.enabled:
             require("observation.state", index, config_path)
@@ -331,19 +417,33 @@ def _missing_sample_features(
                 if key not in raw:
                     require(key, None, policy_path)
 
-    return [DiagnosticFinding(
-        "MISSING_REQUIRED_SAMPLE_FEATURE", DiagnosticStatus.FAIL, Severity.CRITICAL,
-        f"The sample does not cover required numeric observation feature {key}.",
-        {**details, "required_coverage": True, "stage": "sample_input",
-         "processor_steps_executed": 0, "sample_numeric_observation_keys": sorted(raw),
-         "sample_path": str(sample_path), "tensor_slice": []},
-        _provenance(sample_path, "sample_input", key, []),
-    ) for key, details in missing.items()]
+    return [
+        DiagnosticFinding(
+            "MISSING_REQUIRED_SAMPLE_FEATURE",
+            DiagnosticStatus.FAIL,
+            Severity.CRITICAL,
+            f"The sample does not cover required numeric observation feature {key}.",
+            {
+                **details,
+                "required_coverage": True,
+                "stage": "sample_input",
+                "processor_steps_executed": 0,
+                "sample_numeric_observation_keys": sorted(raw),
+                "sample_path": str(sample_path),
+                "tensor_slice": [],
+            },
+            _provenance(sample_path, "sample_input", key, []),
+        )
+        for key, details in missing.items()
+    ]
 
 
 def _invalid_sample_shapes(
-    root: Path, pre: tuple[Any, Path, dict], post: tuple[Any, Path, dict],
-    batch: dict[str, Any], sources: dict[str, str],
+    root: Path,
+    pre: tuple[Any, Path, dict[str, Any]],
+    post: tuple[Any, Path, dict[str, Any]],
+    batch: dict[str, Any],
+    sources: dict[str, str],
 ) -> list[DiagnosticFinding]:
     """Validate saved feature shapes without executing or broadcasting any tensor.
 
@@ -355,8 +455,14 @@ def _invalid_sample_shapes(
     current = observations.copy()
     findings: dict[tuple[str, tuple[int, ...]], DiagnosticFinding] = {}
 
-    def inspect(key: str, shape: Any, available: dict[str, tuple[str, torch.Tensor]],
-                declaration: Path, index: int | None, step_class: str | None) -> None:
+    def inspect(
+        key: str,
+        shape: Any,
+        available: dict[str, tuple[str, torch.Tensor]],
+        declaration: Path,
+        index: int | None,
+        step_class: str | None,
+    ) -> None:
         if key not in available:
             return  # Missing required features have a separate coverage finding.
         if not isinstance(shape, (tuple, list)) or any(type(dim) is not int or dim <= 0 for dim in shape):
@@ -365,26 +471,43 @@ def _invalid_sample_shapes(
         original, tensor = available[key]
         actual = tuple(tensor.shape)
         prefix = len(actual) - len(expected)
-        trailing = actual[-len(expected):] if expected else ()
+        trailing = actual[-len(expected) :] if expected else ()
         if 0 <= prefix <= 2 and trailing == expected and all(dim > 0 for dim in actual):
             return
         source = Path(sources["action"] if original == "action" else sources["observation"])
-        unequal_axes = [axis for axis in range(max(len(expected), len(trailing)))
-                        if axis >= len(expected) or axis >= len(trailing) or expected[axis] != trailing[axis]]
-        findings.setdefault((original, expected), DiagnosticFinding(
-            "INVALID_SAMPLE_SHAPE", DiagnosticStatus.FAIL, Severity.CRITICAL,
-            f"Sample feature {original} has shape {list(actual)}; trailing feature shape must be {list(expected)}.",
-            {"stage": "sample_input", "step_index": index, "step_class": step_class,
-             "feature_key": key, "sample_feature_key": original,
-             "actual_shape": list(actual), "expected_feature_shape": list(expected),
-             "actual_trailing_shape": list(trailing), "leading_axis_count": prefix,
-             "allowed_leading_axes": ["batch", "time"], "violating_feature_shape_axes": unequal_axes,
-             "indexing": "feature shape axes", "processor_steps_executed": 0,
-             "tensor_slice": tensor.reshape(-1)[:16].tolist(),
-             "tensor_slice_truncated": tensor.numel() > 16,
-             "declaration_provenance": _provenance(declaration, index, key).to_dict()},
-            _provenance(source, "sample_input", original, unequal_axes),
-        ))
+        unequal_axes = [
+            axis
+            for axis in range(max(len(expected), len(trailing)))
+            if axis >= len(expected) or axis >= len(trailing) or expected[axis] != trailing[axis]
+        ]
+        findings.setdefault(
+            (original, expected),
+            DiagnosticFinding(
+                "INVALID_SAMPLE_SHAPE",
+                DiagnosticStatus.FAIL,
+                Severity.CRITICAL,
+                f"Sample feature {original} has shape {list(actual)}; trailing feature shape must be {list(expected)}.",
+                {
+                    "stage": "sample_input",
+                    "step_index": index,
+                    "step_class": step_class,
+                    "feature_key": key,
+                    "sample_feature_key": original,
+                    "actual_shape": list(actual),
+                    "expected_feature_shape": list(expected),
+                    "actual_trailing_shape": list(trailing),
+                    "leading_axis_count": prefix,
+                    "allowed_leading_axes": ["batch", "time"],
+                    "violating_feature_shape_axes": unequal_axes,
+                    "indexing": "feature shape axes",
+                    "processor_steps_executed": 0,
+                    "tensor_slice": tensor.reshape(-1)[:16].tolist(),
+                    "tensor_slice_truncated": tensor.numel() > 16,
+                    "declaration_provenance": _provenance(declaration, index, key).to_dict(),
+                },
+                _provenance(source, "sample_input", original, unequal_axes),
+            ),
+        )
 
     pipeline, config_path, _ = pre
     for index, step in enumerate(pipeline.steps):
@@ -430,32 +553,52 @@ def _tensors(transition: Mapping[str, Any]) -> dict[str, torch.Tensor]:
 
 
 def _slice_details(
-    before: torch.Tensor | None, after: torch.Tensor, mask: torch.Tensor,
+    before: torch.Tensor | None,
+    after: torch.Tensor,
+    mask: torch.Tensor,
 ) -> tuple[dict[str, Any], list[int]]:
     indices = mask.reshape(-1).nonzero().flatten().tolist()
     outputs = after.reshape(-1)[indices].tolist()
-    inputs = before.reshape(-1)[indices].tolist() if before is not None and before.shape == after.shape else None
+    inputs = (
+        before.reshape(-1)[indices].tolist() if before is not None and before.shape == after.shape else None
+    )
     return {
-        "tensor_coordinates": mask.nonzero().tolist(), "input_values": inputs,
-        "raw_input_values": inputs, "output_values": outputs, "tensor_slice": outputs,
-        "tensor_shape": list(after.shape), "indexing": "flattened row-major",
-        "input_dtype": str(before.dtype) if before is not None else None, "output_dtype": str(after.dtype),
+        "tensor_coordinates": mask.nonzero().tolist(),
+        "input_values": inputs,
+        "raw_input_values": inputs,
+        "output_values": outputs,
+        "tensor_slice": outputs,
+        "tensor_shape": list(after.shape),
+        "indexing": "flattened row-major",
+        "input_dtype": str(before.dtype) if before is not None else None,
+        "output_dtype": str(after.dtype),
     }, indices
 
 
 def _nonidentity(state: dict[str, torch.Tensor], key: str, mode: NormalizationMode) -> bool:
-    stats = {name: state.get(f"{key}.{name}") for name in ("mean", "std", "min", "max", "q01", "q99", "q10", "q90")}
+    stats = {
+        name: state.get(f"{key}.{name}") for name in ("mean", "std", "min", "max", "q01", "q99", "q10", "q90")
+    }
     if mode == NormalizationMode.MEAN_STD:
-        return any(tensor is not None and bool(torch.any(tensor != identity))
-                   for tensor, identity in ((stats["mean"], 0), (stats["std"], 1)))
-    bounds = {NormalizationMode.MIN_MAX: ("min", "max"), NormalizationMode.QUANTILES: ("q01", "q99"),
-              NormalizationMode.QUANTILE10: ("q10", "q90")}.get(mode)
-    return bool(bounds) and any(stats[name] is not None and bool(torch.any(stats[name] != identity))
-                                for name, identity in zip(bounds or (), (-1, 1)))
+        return any(
+            tensor is not None and bool(torch.any(tensor != identity))
+            for tensor, identity in ((stats["mean"], 0), (stats["std"], 1))
+        )
+    bounds = {
+        NormalizationMode.MIN_MAX: ("min", "max"),
+        NormalizationMode.QUANTILES: ("q01", "q99"),
+        NormalizationMode.QUANTILE10: ("q10", "q90"),
+    }.get(mode)
+    return bool(bounds) and any(
+        stats[name] is not None and bool(torch.any(stats[name] != identity))
+        for name, identity in zip(bounds or (), (-1, 1))
+    )
 
 
 def _bypasses(
-    step: Any, state: dict[str, torch.Tensor], before: dict[str, torch.Tensor],
+    step: Any,
+    state: dict[str, torch.Tensor],
+    before: dict[str, torch.Tensor],
     after: dict[str, torch.Tensor],
 ) -> tuple[list[tuple[str, dict[str, Any], list[int]]], int]:
     """Look for exact key misses and unchanged, non-fixed-point transformations."""
@@ -470,28 +613,57 @@ def _bypasses(
         mode = step.norm_map.get(feature_type, NormalizationMode.IDENTITY)
         if mode == NormalizationMode.IDENTITY or key not in before or key not in after:
             continue
-        if (key != "action" and step.normalize_observation_keys is not None
-                and key not in step.normalize_observation_keys):
+        if (
+            key != "action"
+            and step.normalize_observation_keys is not None
+            and key not in step.normalize_observation_keys
+        ):
             continue
         checked += 1
         missing = key not in actual_keys
-        nonidentity = _nonidentity(state, key, mode) if not missing else any(
-            _nonidentity(state, actual, mode) for actual in actual_keys)
+        nonidentity = (
+            _nonidentity(state, key, mode)
+            if not missing
+            else any(_nonidentity(state, actual, mode) for actual in actual_keys)
+        )
         previous, current = before[key], after[key]
-        required = {NormalizationMode.MEAN_STD: ("mean", "std"), NormalizationMode.MIN_MAX: ("min", "max"),
-                    NormalizationMode.QUANTILES: ("q01", "q99"), NormalizationMode.QUANTILE10: ("q10", "q90")}.get(mode, ())
-        details = {"expected_keys": [f"{key}.{stat}" for stat in required],
-                   "expected_feature_keys": sorted(expected), "actual_stat_keys": sorted(state),
-                   "actual_feature_keys": actual_keys, "normalization_mode": mode.value}
+        required = {
+            NormalizationMode.MEAN_STD: ("mean", "std"),
+            NormalizationMode.MIN_MAX: ("min", "max"),
+            NormalizationMode.QUANTILES: ("q01", "q99"),
+            NormalizationMode.QUANTILE10: ("q10", "q90"),
+        }.get(mode, ())
+        details = {
+            "expected_keys": [f"{key}.{stat}" for stat in required],
+            "expected_feature_keys": sorted(expected),
+            "actual_stat_keys": sorted(state),
+            "actual_feature_keys": actual_keys,
+            "normalization_mode": mode.value,
+        }
         if missing:
             mask = torch.ones_like(current, dtype=torch.bool)
             slices, indices = _slice_details(previous, current, mask)
-            findings.append((key, {**details, **slices, "reason": "stat_key_mismatch", "linf_delta": 0.0,
-                                   "inconclusive": not nonidentity}, indices))
+            findings.append(
+                (
+                    key,
+                    {
+                        **details,
+                        **slices,
+                        "reason": "stat_key_mismatch",
+                        "linf_delta": 0.0,
+                        "inconclusive": not nonidentity,
+                    },
+                    indices,
+                )
+            )
         elif not nonidentity:
             continue
-        elif (previous.shape == current.shape and previous.dtype == current.dtype
-              and torch.equal(previous, current) and torch.isfinite(current).all()):
+        elif (
+            previous.shape == current.shape
+            and previous.dtype == current.dtype
+            and torch.equal(previous, current)
+            and torch.isfinite(current).all()
+        ):
             # Equality alone is insufficient: nonidentity affine transforms have
             # fixed points, and small changes can round away in the input dtype.
             if mode != NormalizationMode.MEAN_STD:
@@ -503,12 +675,22 @@ def _bypasses(
             # dtype. Reproduce that arithmetic for the diagnostic expectation,
             # including its intermediate rounding, rather than a float64 ideal.
             x, mean, std = previous, mean.to(previous.dtype), std.to(previous.dtype)
-            target = x * std + mean if isinstance(step, UnnormalizerProcessorStep) else (x - mean) / (std + step.eps)
+            target = (
+                x * std + mean
+                if isinstance(step, UnnormalizerProcessorStep)
+                else (x - mean) / (std + step.eps)
+            )
             changed = torch.isfinite(target) & (target != previous)
             # Requiring a representable expected change avoids rounding/fixed-point false positives.
             if changed.any():
                 slices, indices = _slice_details(previous, current, changed)
-                findings.append((key, {**details, **slices, "reason": "unchanged_nonidentity_transform", "linf_delta": 0.0}, indices))
+                findings.append(
+                    (
+                        key,
+                        {**details, **slices, "reason": "unchanged_nonidentity_transform", "linf_delta": 0.0},
+                        indices,
+                    )
+                )
     return findings, checked
 
 
@@ -517,65 +699,110 @@ class _StopTrace(Exception):
 
 
 def _gain_mask(
-    step: Any, state: dict[str, torch.Tensor], key: str, previous: torch.Tensor | None,
-    current: torch.Tensor, threshold: float, amplification_factor: float,
+    step: Any,
+    state: dict[str, torch.Tensor],
+    key: str,
+    previous: torch.Tensor | None,
+    current: torch.Tensor,
+    threshold: float,
+    amplification_factor: float,
 ) -> torch.Tensor:
     """Require both a large output and measured elementwise magnitude growth."""
     large = torch.isfinite(current) & (current.double().abs() > threshold)
-    if isinstance(step, (IdentityProcessorStep, AddBatchDimensionProcessorStep, DeviceProcessorStep,
-                         RenameObservationsProcessorStep, NewLineTaskProcessorStep)):
+    if isinstance(
+        step,
+        (
+            IdentityProcessorStep,
+            AddBatchDimensionProcessorStep,
+            DeviceProcessorStep,
+            RenameObservationsProcessorStep,
+            NewLineTaskProcessorStep,
+        ),
+    ):
         return torch.zeros_like(large)
     if isinstance(step, _NORMALIZERS):
         if key == "action":
             feature_type = FeatureType.ACTION
         else:
             feature = step.features.get(key)
-            if feature is None or (step.normalize_observation_keys is not None
-                                   and key not in step.normalize_observation_keys):
+            if feature is None or (
+                step.normalize_observation_keys is not None and key not in step.normalize_observation_keys
+            ):
                 return torch.zeros_like(large)
             feature_type = feature.type
         mode = step.norm_map.get(feature_type, NormalizationMode.IDENTITY)
-        required = {NormalizationMode.MEAN_STD: ("mean", "std"), NormalizationMode.MIN_MAX: ("min", "max"),
-                    NormalizationMode.QUANTILES: ("q01", "q99"), NormalizationMode.QUANTILE10: ("q10", "q90")}.get(mode)
+        required = {
+            NormalizationMode.MEAN_STD: ("mean", "std"),
+            NormalizationMode.MIN_MAX: ("min", "max"),
+            NormalizationMode.QUANTILES: ("q01", "q99"),
+            NormalizationMode.QUANTILE10: ("q10", "q90"),
+        }.get(mode)
         if not required or any(f"{key}.{stat}" not in state for stat in required):
             return torch.zeros_like(large)
     if previous is None or previous.numel() != current.numel():
         return torch.zeros_like(large)
     # Relative/absolute action conversions can change values. A tensor that only
     # changes layout or preserves a pre-existing magnitude has not gained here.
-    return large & (current.double().abs() > previous.reshape(current.shape).double().abs() * amplification_factor)
+    return large & (
+        current.double().abs() > previous.reshape(current.shape).double().abs() * amplification_factor
+    )
 
 
 def _trace_pipeline(
-    artifact: tuple[Any, Path, dict], data: dict[str, Any], role: str, threshold: float,
-    findings: list[DiagnosticFinding], sources: dict[str, str], amplification_factor: float,
+    artifact: tuple[Any, Path, dict[str, Any]],
+    data: dict[str, Any],
+    role: str,
+    threshold: float,
+    findings: list[DiagnosticFinding],
+    sources: dict[str, str],
+    amplification_factor: float,
 ) -> tuple[dict[str, Any] | None, dict[str, int]]:
     pipeline, config_path, config = artifact
     before: dict[str, torch.Tensor] = {}
     active_index: int | None = None
-    coverage = {"steps": 0, "bypass_targets": 0, "preprocessor_tensors": 0,
-                "postprocessor_tensors": 0}
-    step_states = [{key: value.clone() for key, value in step.state_dict().items()} for step in pipeline.steps]
+    coverage = {"steps": 0, "bypass_targets": 0, "preprocessor_tensors": 0, "postprocessor_tensors": 0}
+    step_states = [
+        {key: value.clone() for key, value in step.state_dict().items()} for step in pipeline.steps
+    ]
 
     def emit(
-        check: str, index: int, key: str, details: dict, indices: list[int],
+        check: str,
+        index: int,
+        key: str,
+        details: dict[str, Any],
+        indices: list[int],
         status: DiagnosticStatus = DiagnosticStatus.FAIL,
     ) -> None:
-        findings.append(DiagnosticFinding(
-            check, status, Severity.CRITICAL if status is DiagnosticStatus.FAIL else Severity.INFO,
-            (f"{check} at {role} step {index}, {key}." if status is DiagnosticStatus.FAIL else
-             f"Missing stat keys leave the intended nonidentity transform unknown at {role} step {index}, {key}."),
-            {"pipeline_role": role, "step_index": index, "step_class": type(pipeline.steps[index]).__name__,
-             "tensor_key": key, "feature_key": key, "execution_device": "cpu", "sample_sources": sources, **details},
-            _step_provenance(config_path, config, index, key, indices),
-        ))
+        findings.append(
+            DiagnosticFinding(
+                check,
+                status,
+                Severity.CRITICAL if status is DiagnosticStatus.FAIL else Severity.INFO,
+                (
+                    f"{check} at {role} step {index}, {key}."
+                    if status is DiagnosticStatus.FAIL
+                    else f"Missing stat keys leave the intended nonidentity transform unknown at {role} step {index}, {key}."
+                ),
+                {
+                    "pipeline_role": role,
+                    "step_index": index,
+                    "step_class": type(pipeline.steps[index]).__name__,
+                    "tensor_key": key,
+                    "feature_key": key,
+                    "execution_device": "cpu",
+                    "sample_sources": sources,
+                    **details,
+                },
+                _step_provenance(config_path, config, index, key, indices),
+            )
+        )
 
-    def before_hook(index: int, transition: dict) -> None:
+    def before_hook(index: int, transition: dict[str, Any]) -> None:
         nonlocal before, active_index
         active_index = index
         before = _tensors(transition)
 
-    def after_hook(index: int, transition: dict) -> None:
+    def after_hook(index: int, transition: dict[str, Any]) -> None:
         after = _tensors(transition)
         coverage["steps"] += 1
         bypasses, checked = _bypasses(pipeline.steps[index], step_states[index], before, after)
@@ -586,25 +813,42 @@ def _trace_pipeline(
         for key, tensor in after.items():
             finite = torch.isfinite(tensor)
             coverage[f"{role}_tensors"] += 1
-            mask = _gain_mask(pipeline.steps[index], step_states[index], key, before.get(key), tensor,
-                              threshold, amplification_factor)
+            mask = _gain_mask(
+                pipeline.steps[index],
+                step_states[index],
+                key,
+                before.get(key),
+                tensor,
+                threshold,
+                amplification_factor,
+            )
             if mask.any():
                 details, indices = _slice_details(before.get(key), tensor, mask)
                 previous = before.get(key)
                 details["already_above_threshold_on_entry"] = (
                     (previous.double().abs() > threshold).reshape(-1)[indices].tolist()
-                    if previous is not None and previous.shape == tensor.shape else None
+                    if previous is not None and previous.shape == tensor.shape
+                    else None
                 )
-                emit("EMPIRICAL_GAIN_EXPLOSION", index, key,
-                     {**details, "explosion_threshold": threshold,
-                      "amplification_factor": amplification_factor,
-                      "amplification_rule": "abs(output) > abs(input) * amplification_factor"}, indices)
+                emit(
+                    "EMPIRICAL_GAIN_EXPLOSION",
+                    index,
+                    key,
+                    {
+                        **details,
+                        "explosion_threshold": threshold,
+                        "amplification_factor": amplification_factor,
+                        "amplification_rule": "abs(output) > abs(input) * amplification_factor",
+                    },
+                    indices,
+                )
             if not finite.all():
                 details, indices = _slice_details(before.get(key), tensor, ~finite)
                 previous = before.get(key)
                 details["nonfinite_on_entry"] = (
                     (~torch.isfinite(previous)).reshape(-1)[indices].tolist()
-                    if previous is not None and previous.shape == tensor.shape else None
+                    if previous is not None and previous.shape == tensor.shape
+                    else None
                 )
                 emit("RUNTIME_NON_FINITE", index, key, details, indices)
                 # Stop at the first offending step so downstream steps cannot obscure its origin.
@@ -619,15 +863,27 @@ def _trace_pipeline(
         return None, coverage
     except Exception as exc:
         key = next(iter(before), "transition")
-        findings.append(DiagnosticFinding(
-            "TRACE_EXECUTION", DiagnosticStatus.FAIL, Severity.CRITICAL,
-            f"Native {role} {'step execution' if active_index is not None else 'input conversion'} failed: {exc}",
-            {"pipeline_role": role, "step_index": active_index,
-             "step_class": type(pipeline.steps[active_index]).__name__ if active_index is not None else None,
-             "stage": "processor_step" if active_index is not None else "input_conversion",
-             "tensor_key": key, "input_tensor_keys": sorted(before)},
-            _step_provenance(config_path, config, active_index, key) if active_index is not None else _provenance(config_path),
-        ))
+        findings.append(
+            DiagnosticFinding(
+                "TRACE_EXECUTION",
+                DiagnosticStatus.FAIL,
+                Severity.CRITICAL,
+                f"Native {role} {'step execution' if active_index is not None else 'input conversion'} failed: {exc}",
+                {
+                    "pipeline_role": role,
+                    "step_index": active_index,
+                    "step_class": type(pipeline.steps[active_index]).__name__
+                    if active_index is not None
+                    else None,
+                    "stage": "processor_step" if active_index is not None else "input_conversion",
+                    "tensor_key": key,
+                    "input_tensor_keys": sorted(before),
+                },
+                _step_provenance(config_path, config, active_index, key)
+                if active_index is not None
+                else _provenance(config_path),
+            )
+        )
         return None, coverage
     finally:
         pipeline.unregister_before_step_hook(before_hook)
@@ -635,7 +891,9 @@ def _trace_pipeline(
 
 
 def run_offline_trace(
-    checkpoint_dir: Path, sample_npz_path: Path, explosion_threshold: float = 50.0,
+    checkpoint_dir: Path,
+    sample_npz_path: Path,
+    explosion_threshold: float = 50.0,
     amplification_factor: float = 2.0,
 ) -> list[DiagnosticFinding]:
     """Run only native, inspected data processors against real local sample tensors.
@@ -654,9 +912,18 @@ def run_offline_trace(
     try:
         pre, post = _load_processor_pair(Path(checkpoint_dir), numeric_only=True)
     except _TraceLoadError as exc:
-        return [DiagnosticFinding("OFFLINE_TRACE", exc.status,
-                                  Severity.CRITICAL if exc.status in (DiagnosticStatus.FAIL, DiagnosticStatus.CONFLICT) else Severity.INFO,
-                                  exc.summary, exc.details, exc.provenance)]
+        return [
+            DiagnosticFinding(
+                "OFFLINE_TRACE",
+                exc.status,
+                Severity.CRITICAL
+                if exc.status in (DiagnosticStatus.FAIL, DiagnosticStatus.CONFLICT)
+                else Severity.INFO,
+                exc.summary,
+                exc.details,
+                exc.provenance,
+            )
+        ]
     sample_path = Path(sample_npz_path).resolve()
     sources = {"observation": str(sample_path)}
     try:
@@ -672,77 +939,127 @@ def run_offline_trace(
                 batch["action"] = action
                 sources["action"] = str(action_path)
     except (OSError, ValueError, TypeError, RuntimeError) as exc:
-        return [DiagnosticFinding("TRACE_INPUT", DiagnosticStatus.FAIL, Severity.CRITICAL,
-                                  f"Cannot load sample tensors: {exc}", provenance=_provenance(sample_path))]
+        return [
+            DiagnosticFinding(
+                "TRACE_INPUT",
+                DiagnosticStatus.FAIL,
+                Severity.CRITICAL,
+                f"Cannot load sample tensors: {exc}",
+                provenance=_provenance(sample_path),
+            )
+        ]
     for key, tensor in _tensors(batch).items():
         nonfinite = ~torch.isfinite(tensor)
         if nonfinite.any():
             details, indices = _slice_details(tensor, tensor, nonfinite)
             source = Path(sources["action"] if key == "action" else sources["observation"])
-            findings.append(DiagnosticFinding(
-                "INVALID_SAMPLE_INPUT", DiagnosticStatus.FAIL, Severity.CRITICAL,
-                f"Sample tensor {key} contains NaN or Inf before processor step 0.",
-                {**details, "stage": "sample_input", "step_index": None, "tensor_key": key,
-                 "sample_sources": sources, "processor_steps_executed": 0},
-                _provenance(source, "sample_input", key, indices),
-            ))
+            findings.append(
+                DiagnosticFinding(
+                    "INVALID_SAMPLE_INPUT",
+                    DiagnosticStatus.FAIL,
+                    Severity.CRITICAL,
+                    f"Sample tensor {key} contains NaN or Inf before processor step 0.",
+                    {
+                        **details,
+                        "stage": "sample_input",
+                        "step_index": None,
+                        "tensor_key": key,
+                        "sample_sources": sources,
+                        "processor_steps_executed": 0,
+                    },
+                    _provenance(source, "sample_input", key, indices),
+                )
+            )
     if findings:
         return findings
     try:
         findings.extend(_invalid_sample_shapes(Path(checkpoint_dir).resolve(), pre, post, batch, sources))
     except (OSError, ValueError, TypeError, AttributeError) as exc:
-        return [DiagnosticFinding(
-            "INVALID_SAMPLE_SHAPE", DiagnosticStatus.FAIL, Severity.CRITICAL,
-            f"Declared sample shape compatibility could not be established: {exc}",
-            {"stage": "sample_input", "processor_steps_executed": 0},
-            _provenance(sample_path, "sample_input"),
-        )]
+        return [
+            DiagnosticFinding(
+                "INVALID_SAMPLE_SHAPE",
+                DiagnosticStatus.FAIL,
+                Severity.CRITICAL,
+                f"Declared sample shape compatibility could not be established: {exc}",
+                {"stage": "sample_input", "processor_steps_executed": 0},
+                _provenance(sample_path, "sample_input"),
+            )
+        ]
     if findings:
         return findings
     try:
         findings.extend(_missing_sample_features(Path(checkpoint_dir).resolve(), pre, batch, sample_path))
-        if not findings and not any(key.startswith("observation.") and isinstance(value, torch.Tensor)
-                                    for key, value in batch.items()):
+        if not findings and not any(
+            key.startswith("observation.") and isinstance(value, torch.Tensor) for key, value in batch.items()
+        ):
             raise ValueError("The sample archive has no numeric observation tensors")
     except (OSError, ValueError, TypeError, AttributeError) as exc:
-        return [DiagnosticFinding(
-            "MISSING_REQUIRED_SAMPLE_FEATURE", DiagnosticStatus.FAIL, Severity.CRITICAL,
-            f"Required numeric sample coverage could not be established: {exc}",
-            {"required_coverage": True, "stage": "sample_input", "processor_steps_executed": 0},
-            _provenance(sample_path, "sample_input"),
-        )]
+        return [
+            DiagnosticFinding(
+                "MISSING_REQUIRED_SAMPLE_FEATURE",
+                DiagnosticStatus.FAIL,
+                Severity.CRITICAL,
+                f"Required numeric sample coverage could not be established: {exc}",
+                {"required_coverage": True, "stage": "sample_input", "processor_steps_executed": 0},
+                _provenance(sample_path, "sample_input"),
+            )
+        ]
     if findings:
         return findings
     findings.extend(_language_stub_notes(pre, "preprocessor"))
     findings.extend(_language_stub_notes(post, "postprocessor"))
-    output, coverage = _trace_pipeline(pre, batch, "preprocessor", explosion_threshold,
-                                       findings, sources, amplification_factor)
+    output, coverage = _trace_pipeline(
+        pre, batch, "preprocessor", explosion_threshold, findings, sources, amplification_factor
+    )
     complete = output is not None
     if output is not None and isinstance(output.get("action"), torch.Tensor):
-        post_output, post_coverage = _trace_pipeline(post, {"action": output["action"]}, "postprocessor",
-                                                     explosion_threshold, findings, sources, amplification_factor)
+        post_output, post_coverage = _trace_pipeline(
+            post,
+            {"action": output["action"]},
+            "postprocessor",
+            explosion_threshold,
+            findings,
+            sources,
+            amplification_factor,
+        )
         complete = post_output is not None
         coverage["steps"] += post_coverage["steps"]
         coverage["bypass_targets"] += post_coverage["bypass_targets"]
         coverage["postprocessor_tensors"] += post_coverage["postprocessor_tensors"]
     else:
         complete = False
-        findings.append(DiagnosticFinding(
-            "POSTPROCESSOR_TRACE", DiagnosticStatus.UNKNOWN, Severity.INFO,
-            "Postprocessing was not exercised because no valid preprocessed sample action is available.",
-            {"sample_sources": sources}, _provenance(post[1]),
-        ))
-    counts = {"SILENT_STEP_BYPASS": coverage["bypass_targets"],
-              "EMPIRICAL_GAIN_EXPLOSION": coverage["preprocessor_tensors"] + coverage["postprocessor_tensors"],
-              "RUNTIME_NON_FINITE": coverage["steps"]}
+        findings.append(
+            DiagnosticFinding(
+                "POSTPROCESSOR_TRACE",
+                DiagnosticStatus.UNKNOWN,
+                Severity.INFO,
+                "Postprocessing was not exercised because no valid preprocessed sample action is available.",
+                {"sample_sources": sources},
+                _provenance(post[1]),
+            )
+        )
+    counts = {
+        "SILENT_STEP_BYPASS": coverage["bypass_targets"],
+        "EMPIRICAL_GAIN_EXPLOSION": coverage["preprocessor_tensors"] + coverage["postprocessor_tensors"],
+        "RUNTIME_NON_FINITE": coverage["steps"],
+    }
     for check in _TRACE_CHECKS:
         if not any(finding.check_id == check for finding in findings):
             observed = counts[check]
-            findings.append(DiagnosticFinding(
-                check, DiagnosticStatus.PASS if observed and complete else DiagnosticStatus.UNKNOWN, Severity.INFO,
-                "No violation observed in the traced sample." if observed and complete else
-                "The complete check could not be observed with the available sample and trace.",
-                {"observed_count": observed, "trace_complete": complete,
-                 "sample_sources": sources, "execution_device": "cpu"},
-            ))
+            findings.append(
+                DiagnosticFinding(
+                    check,
+                    DiagnosticStatus.PASS if observed and complete else DiagnosticStatus.UNKNOWN,
+                    Severity.INFO,
+                    "No violation observed in the traced sample."
+                    if observed and complete
+                    else "The complete check could not be observed with the available sample and trace.",
+                    {
+                        "observed_count": observed,
+                        "trace_complete": complete,
+                        "sample_sources": sources,
+                        "execution_device": "cpu",
+                    },
+                )
+            )
     return findings

@@ -24,3 +24,12 @@ coverage.xml
 .DS_Store
 Thumbs.db
 tests/fixtures/generated/
+
+# Optional local editor and agent state.
+CLAUDE.md
+.cursorrules
+.claude/
+.aider*
+.codex*
+.github/copilot*
+.preflight-demo/

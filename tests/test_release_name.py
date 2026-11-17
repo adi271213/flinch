@@ -45,7 +45,7 @@ def test_new_namespace_does_not_shadow_a_separately_installed_dataset_doctor(tmp
     dataset_package.mkdir(parents=True)
     (dataset_package / "__init__.py").write_text("DATASET_LINTER = True\n")
     source = Path(__file__).resolve().parents[1] / "src"
-    script = '''
+    script = """
 from pathlib import Path
 import sys
 sys.path.insert(0, sys.argv[1])
@@ -56,10 +56,15 @@ assert lerobot_doctor.DATASET_LINTER is True
 assert Path(lerobot_doctor.__file__).resolve().is_relative_to(Path(sys.argv[1]))
 assert Path(lerobot_preflight.__file__).resolve().is_relative_to(Path(sys.argv[2]))
 print("dataset doctor and checkpoint preflight coexist")
-'''
-    result = subprocess.run([sys.executable, "-S", "-c", script, str(dataset_root), str(source)],
-                            cwd=tmp_path, env=source_subprocess_env(), capture_output=True, text=True,
-                            check=False)
+"""
+    result = subprocess.run(
+        [sys.executable, "-S", "-c", script, str(dataset_root), str(source)],
+        cwd=tmp_path,
+        env=source_subprocess_env(),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
     assert result.returncode == 0, result.stderr
     assert "coexist" in result.stdout
 
@@ -78,7 +83,9 @@ def test_new_graph_exports_can_replace_recognized_previous_release_outputs(tmp_p
     graph = build_processor_graph(checkpoint)
     output = tmp_path / ("lineage" + suffix)
     write_processor_graph(graph, output)
-    legacy = output.read_text().replace("lerobot-preflight-processor-lineage-v1", "lerobot-doctor-processor-lineage-v1")
+    legacy = output.read_text().replace(
+        "lerobot-preflight-processor-lineage-v1", "lerobot-doctor-processor-lineage-v1"
+    )
     output.write_text(legacy)
     write_processor_graph(graph, output)
     assert "lerobot-preflight-processor-lineage-v1" in output.read_text()

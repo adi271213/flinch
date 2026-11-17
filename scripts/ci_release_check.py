@@ -20,7 +20,7 @@ import venv
 import zipfile
 from pathlib import Path, PurePosixPath
 
-_ORIGINS = r'''
+_ORIGINS = r"""
 from pathlib import Path
 import importlib.metadata as metadata
 import hashlib, json, os, site, sys
@@ -48,10 +48,10 @@ print(json.dumps({"prefix": sys.prefix, "python": sys.version, "origins": origin
                   "installed_runtime_matches_input_artifact": True,
                   "versions": {name: metadata.version(name) for name in
                     ("lerobot-preflight", "lerobot", "torch", "numpy", "huggingface-hub", "safetensors")}}, indent=2))
-'''
+"""
 
 
-_FIXTURES = r'''
+_FIXTURES = r"""
 from pathlib import Path
 import json, shutil, socket
 import numpy as np
@@ -142,7 +142,7 @@ np.savez(root / "invalid_shape.npz", **{"observation.state": np.zeros((1, 1), dt
 (root / "native_ground_truth.json").write_text(json.dumps(observed, indent=2), encoding="utf-8")
 assert not any(name == "lerobot_preflight" or name.startswith("lerobot_preflight.") for name in __import__("sys").modules)
 print(json.dumps(observed, indent=2))
-'''
+"""
 
 
 def _hash(path: Path) -> str:
@@ -171,8 +171,12 @@ def _runtime_hashes(artifact: Path) -> dict[str, str]:
         with tarfile.open(artifact) as archive:
             for member in archive:
                 parts = PurePosixPath(member.name).parts
-                if (member.isfile() and len(parts) >= 4 and parts[1:3] == ("src", "lerobot_preflight")
-                        and member.name.endswith(".py")):
+                if (
+                    member.isfile()
+                    and len(parts) >= 4
+                    and parts[1:3] == ("src", "lerobot_preflight")
+                    and member.name.endswith(".py")
+                ):
                     stream = archive.extractfile(member)
                     if stream is None:
                         raise ValueError(f"Cannot read Python module from source artifact: {member.name}")
@@ -184,13 +188,21 @@ def _runtime_hashes(artifact: Path) -> dict[str, str]:
 
 
 def _environment(work: Path, *, offline: bool) -> dict[str, str]:
-    environment = {key: value for key, value in os.environ.items()
-                   if key not in {"PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV", "PYTHONUSERBASE", "PYTHONUTF8"}
-                   and (not key.startswith("PIP_") or key == "PIP_CACHE_DIR")}
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in {"PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV", "PYTHONUSERBASE", "PYTHONUTF8"}
+        and (not key.startswith("PIP_") or key == "PIP_CACHE_DIR")
+    }
     # Keep the platform's filesystem/default-text encoding under test. Only
     # captured console streams use UTF-8, so Windows CP1252 regressions remain visible.
-    environment.update(PYTHONNOUSERSITE="1", PYTHONIOENCODING="utf-8", PIP_CONFIG_FILE=os.devnull,
-                       PIP_DISABLE_PIP_VERSION_CHECK="1", HF_HOME=str(work / "empty-hf-cache"))
+    environment.update(
+        PYTHONNOUSERSITE="1",
+        PYTHONIOENCODING="utf-8",
+        PIP_CONFIG_FILE=os.devnull,
+        PIP_DISABLE_PIP_VERSION_CHECK="1",
+        HF_HOME=str(work / "empty-hf-cache"),
+    )
     for key in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE", "HF_DATASETS_OFFLINE"):
         if offline:
             environment[key] = "1"
@@ -206,7 +218,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--work-dir", type=Path, required=True)
     parser.add_argument("--results-dir", type=Path, required=True)
     parser.add_argument("--phase", choices=("all", "install", "smoke", "pytest"), default="all")
-    parser.add_argument("--torch-cpu", action="store_true", help="Resolve CPU PyTorch from its official extra index")
+    parser.add_argument(
+        "--torch-cpu", action="store_true", help="Resolve CPU PyTorch from its official extra index"
+    )
     args = parser.parse_args(argv)
     work, results = args.work_dir.resolve(), args.results_dir.resolve()
     dist = args.dist_dir.resolve()
@@ -219,10 +233,19 @@ def main(argv: list[str] | None = None) -> int:
     if args.phase != "all" and summary_path.is_file():
         summary = json.loads(summary_path.read_text(encoding="utf-8"))
     else:
-        summary = {"distribution": args.distribution, "platform": platform.platform(), "python": sys.version,
-                   "work_dir": str(work), "phase": args.phase, "commands": [], "validations": [],
-                   "pythonpath_present_during_diagnostics": False, "system_site_packages": False,
-                   "torch_cpu_extra_index": args.torch_cpu, "neural_policy_execution": False}
+        summary = {
+            "distribution": args.distribution,
+            "platform": platform.platform(),
+            "python": sys.version,
+            "work_dir": str(work),
+            "phase": args.phase,
+            "commands": [],
+            "validations": [],
+            "pythonpath_present_during_diagnostics": False,
+            "system_site_packages": False,
+            "torch_cpu_extra_index": args.torch_cpu,
+            "neural_policy_execution": False,
+        }
     environment = _environment(work, offline=False)
     runtime_environment = _environment(work, offline=True)
     environment_dir = work / "installed environment"
@@ -231,8 +254,11 @@ def main(argv: list[str] | None = None) -> int:
     console = scripts / ("lerobot-preflight.exe" if os.name == "nt" else "lerobot-preflight")
 
     def save() -> None:
-        summary["passed"] = (not summary.get("error") and all(item["passed"] for item in summary["commands"])
-                             and all(item["passed"] for item in summary["validations"]))
+        summary["passed"] = (
+            not summary.get("error")
+            and all(item["passed"] for item in summary["commands"])
+            and all(item["passed"] for item in summary["validations"])
+        )
         summary_path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
 
     def validate(name: str, condition: bool, details: object = None) -> bool:
@@ -242,8 +268,15 @@ def main(argv: list[str] | None = None) -> int:
             print(f"FAIL: {name}: {details}", flush=True)
         return condition
 
-    def run(name: str, command: list[str | Path], expected: int = 0, *, offline: bool = True,
-            cwd: Path = work, timeout: int = 300) -> bool:
+    def run(
+        name: str,
+        command: list[str | Path],
+        expected: int = 0,
+        *,
+        offline: bool = True,
+        cwd: Path = work,
+        timeout: int = 300,
+    ) -> bool:
         command = [str(part) for part in command]
         stdout, stderr = results / f"{name}.stdout.txt", results / f"{name}.stderr.txt"
         print(f"Running {name}", flush=True)
@@ -251,8 +284,13 @@ def main(argv: list[str] | None = None) -> int:
         timed_out = False
         with stdout.open("w", encoding="utf-8") as output, stderr.open("w", encoding="utf-8") as error:
             try:
-                process = subprocess.Popen(command, cwd=cwd,
-                    env=runtime_environment if offline else environment, stdout=output, stderr=error)
+                process = subprocess.Popen(
+                    command,
+                    cwd=cwd,
+                    env=runtime_environment if offline else environment,
+                    stdout=output,
+                    stderr=error,
+                )
                 try:
                     code = process.wait(timeout=timeout)
                 except subprocess.TimeoutExpired:
@@ -264,10 +302,21 @@ def main(argv: list[str] | None = None) -> int:
                 error.write(f"{type(exc).__name__}: {exc}\n")
                 code = -1
         passed = code == expected and not timed_out
-        summary["commands"].append({"name": name, "command": command, "cwd": str(cwd), "exit_code": code,
-            "expected_exit_code": expected, "passed": passed, "timed_out": timed_out,
-            "elapsed_seconds": round(time.monotonic() - started, 3), "offline_flags": offline,
-            "stdout": stdout.name, "stderr": stderr.name})
+        summary["commands"].append(
+            {
+                "name": name,
+                "command": command,
+                "cwd": str(cwd),
+                "exit_code": code,
+                "expected_exit_code": expected,
+                "passed": passed,
+                "timed_out": timed_out,
+                "elapsed_seconds": round(time.monotonic() - started, 3),
+                "offline_flags": offline,
+                "stdout": stdout.name,
+                "stderr": stderr.name,
+            }
+        )
         save()
         print(f"{name}: {'PASS' if passed else 'FAIL'} (exit {code}, expected {expected})", flush=True)
         if not passed:
@@ -276,7 +325,10 @@ def main(argv: list[str] | None = None) -> int:
         return passed
 
     try:
-        wheels, sdists = sorted(dist.glob("lerobot_preflight-*.whl")), sorted(dist.glob("lerobot_preflight-*.tar.gz"))
+        wheels, sdists = (
+            sorted(dist.glob("lerobot_preflight-*.whl")),
+            sorted(dist.glob("lerobot_preflight-*.tar.gz")),
+        )
         if len(wheels) != 1 or len(sdists) != 1:
             raise ValueError("dist directory must contain exactly one wheel and one sdist")
         artifact, source_archive = (wheels[0] if args.distribution == "wheel" else sdists[0]), sdists[0]
@@ -288,19 +340,46 @@ def main(argv: list[str] | None = None) -> int:
         manifest_path = dist / "artifact_hashes.json"
         if manifest_path.is_file():
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            if not validate("shared_artifact_hashes", all(manifest.get(name) == digest
-                        for name, digest in summary["artifacts"].items()), summary["artifacts"]):
+            if not validate(
+                "shared_artifact_hashes",
+                all(manifest.get(name) == digest for name, digest in summary["artifacts"].items()),
+                summary["artifacts"],
+            ):
                 return 1
         if args.phase in ("all", "install"):
             if environment_dir.exists():
-                raise FileExistsError(f"Refusing to reuse a pre-existing install environment: {environment_dir}")
+                raise FileExistsError(
+                    f"Refusing to reuse a pre-existing install environment: {environment_dir}"
+                )
             venv.EnvBuilder(with_pip=True, system_site_packages=False).create(environment_dir)
-            pip_options = ["--index-url", "https://pypi.org/simple", "--disable-pip-version-check",
-                           "--progress-bar", "off", "--timeout", "45", "--retries", "2"]
+            pip_options = [
+                "--index-url",
+                "https://pypi.org/simple",
+                "--disable-pip-version-check",
+                "--progress-bar",
+                "off",
+                "--timeout",
+                "45",
+                "--retries",
+                "2",
+            ]
             if args.torch_cpu:
                 pip_options += ["--extra-index-url", "https://download.pytorch.org/whl/cpu"]
-            if not run("install", [python, "-m", "pip", "install", *pip_options, "--report",
-                                   results / "pip-install.json", artifact], offline=False, timeout=1500):
+            if not run(
+                "install",
+                [
+                    python,
+                    "-m",
+                    "pip",
+                    "install",
+                    *pip_options,
+                    "--report",
+                    results / "pip-install.json",
+                    artifact,
+                ],
+                offline=False,
+                timeout=1500,
+            ):
                 return 1
             summary["installed_artifact_sha256"] = _hash(artifact)
         elif not python.is_file() or summary.get("installed_artifact_sha256") != _hash(artifact):
@@ -311,21 +390,49 @@ def main(argv: list[str] | None = None) -> int:
             run("version", [console, "--version"])
             run("help", [console, "--help"])
             fixtures = work / "native fixtures with spaces"
-            generated = origins_ok and run("generate_native_fixtures", [python, "-I", "-c", _FIXTURES, fixtures])
+            generated = origins_ok and run(
+                "generate_native_fixtures", [python, "-I", "-c", _FIXTURES, fixtures]
+            )
             if generated:
-                hashes = {str(path.relative_to(fixtures)): _hash(path) for path in fixtures.rglob("*") if path.is_file()}
+                hashes = {
+                    str(path.relative_to(fixtures)): _hash(path)
+                    for path in fixtures.rglob("*")
+                    if path.is_file()
+                }
 
-                def case(name: str, checkpoint: str, expected: int, checks: tuple[str, ...] = (),
-                         *, sample: bool = True, extra: tuple[str | Path, ...] = ()) -> None:
+                def case(
+                    name: str,
+                    checkpoint: str,
+                    expected: int,
+                    checks: tuple[str, ...] = (),
+                    *,
+                    sample: bool = True,
+                    extra: tuple[str | Path, ...] = (),
+                ) -> None:
                     report = results / f"{name}.report.json"
-                    command: list[str | Path] = [console, "--policy", fixtures / checkpoint, "--report", report]
+                    command: list[str | Path] = [
+                        console,
+                        "--policy",
+                        fixtures / checkpoint,
+                        "--report",
+                        report,
+                    ]
                     if sample:
                         command += ["--sample", fixtures / checkpoint / "sample.npz"]
                     run(name, [*command, *extra], expected)
                     try:
                         findings = json.loads(report.read_text(encoding="utf-8"))["findings"]
-                        validate(name + "_check_ids", all(any(finding["check_id"] == check and
-                            finding["status"] == "FAIL" for finding in findings) for check in checks), list(checks))
+                        validate(
+                            name + "_check_ids",
+                            all(
+                                any(
+                                    finding["check_id"] == check and finding["status"] == "FAIL"
+                                    for finding in findings
+                                )
+                                for check in checks
+                            ),
+                            list(checks),
+                        )
                     except (OSError, KeyError, ValueError) as exc:
                         validate(name + "_json_report", False, str(exc))
 
@@ -338,25 +445,65 @@ def main(argv: list[str] | None = None) -> int:
                 for name in ("current_first", "current_first_normalized"):
                     case(name, name, 0)
                     case(name + "_self", name, 0, sample=False, extra=("--baseline", fixtures / name))
-                    case(name + "_self_strict", name, 0, sample=False,
-                         extra=("--baseline", fixtures / name, "--strict"))
-                case("privilege_expansion", "expanded_candidate", 1,
-                     ("PRIVILEGE_ACTION_GAIN_ESCALATION", "PRIVILEGE_HORIZON_ESCALATION"),
-                     extra=("--baseline", fixtures / "clean"))
-                case("invalid_sample_shape", "clean", 1, ("INVALID_SAMPLE_SHAPE",), sample=False,
-                     extra=("--sample", fixtures / "invalid_shape.npz"))
+                    case(
+                        name + "_self_strict",
+                        name,
+                        0,
+                        sample=False,
+                        extra=("--baseline", fixtures / name, "--strict"),
+                    )
+                case(
+                    "privilege_expansion",
+                    "expanded_candidate",
+                    1,
+                    ("PRIVILEGE_ACTION_GAIN_ESCALATION", "PRIVILEGE_HORIZON_ESCALATION"),
+                    extra=("--baseline", fixtures / "clean"),
+                )
+                case(
+                    "invalid_sample_shape",
+                    "clean",
+                    1,
+                    ("INVALID_SAMPLE_SHAPE",),
+                    sample=False,
+                    extra=("--sample", fixtures / "invalid_shape.npz"),
+                )
                 for extension in ("json", "mmd"):
                     graph = results / f"processor_graph.{extension}"
                     case("graph_" + extension, "clean", 0, extra=("--graph", graph))
                     validate("graph_" + extension + "_created", graph.is_file())
                 case("missing_checkpoint", "missing", 1, ("SCHEMA_GENERATION",), sample=False)
-                validate("checkpoint_inputs_unchanged", hashes == {str(path.relative_to(fixtures)): _hash(path)
-                         for path in fixtures.rglob("*") if path.is_file()})
+                validate(
+                    "checkpoint_inputs_unchanged",
+                    hashes
+                    == {
+                        str(path.relative_to(fixtures)): _hash(path)
+                        for path in fixtures.rglob("*")
+                        if path.is_file()
+                    },
+                )
         if args.phase in ("all", "pytest"):
             # Test-only dependencies are added only after installed CLI proof.
-            if run("install_pytest", [python, "-m", "pip", "install", "--index-url", "https://pypi.org/simple",
-                "--disable-pip-version-check", "--progress-bar", "off", "--timeout", "45", "--retries", "2",
-                "pytest>=8"], offline=False, timeout=300):
+            if run(
+                "install_pytest",
+                [
+                    python,
+                    "-m",
+                    "pip",
+                    "install",
+                    "--index-url",
+                    "https://pypi.org/simple",
+                    "--disable-pip-version-check",
+                    "--progress-bar",
+                    "off",
+                    "--timeout",
+                    "45",
+                    "--retries",
+                    "2",
+                    "pytest>=8",
+                ],
+                offline=False,
+                timeout=300,
+            ):
                 source = work / "extracted source archive"
                 with tarfile.open(source_archive) as archive:
                     archive.extractall(source, filter="data")
@@ -365,16 +512,37 @@ def main(argv: list[str] | None = None) -> int:
                     raise ValueError("Source archive must contain one project root")
                 # Keep the installed package under test; sources are present for
                 # the explicit source-portability tests and package metadata.
-                run("pytest", [python, "-m", "pytest", "-q", "-o", "pythonpath=",
-                               "--junitxml", results / "pytest-junit.xml"], cwd=projects[0].parent, timeout=900)
+                run(
+                    "pytest",
+                    [
+                        python,
+                        "-m",
+                        "pytest",
+                        "-q",
+                        "-o",
+                        "pythonpath=",
+                        "--junitxml",
+                        results / "pytest-junit.xml",
+                    ],
+                    cwd=projects[0].parent,
+                    timeout=900,
+                )
     except Exception as exc:
         summary["error"] = f"{type(exc).__name__}: {exc}"
         print(summary["error"], flush=True)
     finally:
         save()
-        lines = [f"### {platform.system()} / Python {sys.version_info.major}.{sys.version_info.minor} / {args.distribution}",
-                 "", f"**{'PASS' if summary['passed'] else 'FAIL'}**", "", "| Check | Result |", "| --- | --- |"]
-        lines += [f"| {item['name']} | {'PASS' if item['passed'] else 'FAIL'} |" for item in summary["commands"]]
+        lines = [
+            f"### {platform.system()} / Python {sys.version_info.major}.{sys.version_info.minor} / {args.distribution}",
+            "",
+            f"**{'PASS' if summary['passed'] else 'FAIL'}**",
+            "",
+            "| Check | Result |",
+            "| --- | --- |",
+        ]
+        lines += [
+            f"| {item['name']} | {'PASS' if item['passed'] else 'FAIL'} |" for item in summary["commands"]
+        ]
         if summary.get("error"):
             lines += ["", "Error: " + summary["error"]]
         markdown = "\n".join(lines) + "\n"

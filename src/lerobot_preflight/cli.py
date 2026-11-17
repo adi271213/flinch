@@ -43,10 +43,15 @@ def _collect(
                 if finding.status is DiagnosticStatus.UNKNOWN:
                     finding.details.setdefault("required_coverage", True)
             if not findings:
-                findings = [DiagnosticFinding(
-                    "COMPATIBILITY_STATUS", DiagnosticStatus.UNKNOWN, Severity.WARNING,
-                    "Baseline comparison returned no coverage evidence.", {"required_coverage": True},
-                )]
+                findings = [
+                    DiagnosticFinding(
+                        "COMPATIBILITY_STATUS",
+                        DiagnosticStatus.UNKNOWN,
+                        Severity.WARNING,
+                        "Baseline comparison returned no coverage evidence.",
+                        {"required_coverage": True},
+                    )
+                ]
         report.findings.extend(findings)
     except Exception as exc:
         report.findings.append(_runner_error(stage, exc))
@@ -64,11 +69,16 @@ def run_doctor(
     policy = Path(policy)
     report = PreflightReport(str(policy.resolve()), strict=strict, baseline_requested=baseline is not None)
     metadata_options = {"metadata_path": Path(metadata)} if metadata is not None else {}
-    _collect(report, "preflight", lambda: run_preflight(policy, std_warn_threshold=std_threshold, **metadata_options))
+    _collect(
+        report,
+        "preflight",
+        lambda: run_preflight(policy, std_warn_threshold=std_threshold, **metadata_options),
+    )
     _collect(report, "temporal audit", lambda: run_temporal_audit(policy, **metadata_options))
     if sample is not None:
         _collect(report, "offline trace", lambda: run_offline_trace(policy, Path(sample)))
     if baseline is not None:
+
         def compare() -> list[DiagnosticFinding]:
             from .privilege_delta import run_privilege_delta
 
@@ -109,9 +119,7 @@ def _finding_context(finding: DiagnosticFinding) -> str:
             f"dims={json.dumps(dimensions, ensure_ascii=False, allow_nan=False, separators=(',', ':'))}"
         )
 
-    for field in (
-        "tensor_slice", "saved_values", "observed_relative_action_slice", "value"
-    ):
+    for field in ("tensor_slice", "saved_values", "observed_relative_action_slice", "value"):
         if field in details:
             context.append(f"values={_compact(details[field])}")
             break
@@ -124,8 +132,11 @@ def _finding_context(finding: DiagnosticFinding) -> str:
 def _print_report(report: PreflightReport) -> None:
     print(f"lerobot-preflight: {report.checkpoint_dir}")
     if report.strict or report.baseline_requested:
-        print("Gate policy: required UNKNOWN findings and WARNING advisories fail; informational physical notes are exempt (--strict)." if report.strict else
-              "Gate policy: UNKNOWN required baseline comparison coverage fails.")
+        print(
+            "Gate policy: required UNKNOWN findings and WARNING advisories fail; informational physical notes are exempt (--strict)."
+            if report.strict
+            else "Gate policy: UNKNOWN required baseline comparison coverage fails."
+        )
     for status in (
         DiagnosticStatus.FAIL,
         DiagnosticStatus.CONFLICT,
@@ -184,18 +195,37 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--policy", type=Path, required=True, help="Local checkpoint directory")
     parser.add_argument("--sample", type=Path, help="Local observation NPZ for offline tracing")
     parser.add_argument("--baseline", type=Path, help="Local baseline checkpoint for privilege comparison")
-    parser.add_argument("--strict", action="store_true", help="Fail on coverage UNKNOWNs or WARNING advisories; optional physical notes are exempt")
-    parser.add_argument("--metadata", type=Path, help="Explicit local JSON sidecar for physical semantics and observation chronology")
+    parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="Fail on coverage UNKNOWNs or WARNING advisories; optional physical notes are exempt",
+    )
+    parser.add_argument(
+        "--metadata",
+        type=Path,
+        help="Explicit local JSON sidecar for physical semantics and observation chronology",
+    )
     parser.add_argument("--report", type=Path, help="Write strict JSON to a new or prior report file")
-    parser.add_argument("--graph", type=Path,
-                        help="Export processor/feature lineage as .json, .mmd, or Markdown .md")
-    parser.add_argument("--std-threshold", type=float, default=1e-4,
-                        help="Warn below this saved standard deviation (default: 1e-4)")
+    parser.add_argument(
+        "--graph", type=Path, help="Export processor/feature lineage as .json, .mmd, or Markdown .md"
+    )
+    parser.add_argument(
+        "--std-threshold",
+        type=float,
+        default=1e-4,
+        help="Warn below this saved standard deviation (default: 1e-4)",
+    )
     args = parser.parse_args(argv)
 
     try:
-        report = run_doctor(args.policy, args.sample, args.baseline, args.std_threshold,
-                            strict=args.strict, metadata=args.metadata)
+        report = run_doctor(
+            args.policy,
+            args.sample,
+            args.baseline,
+            args.std_threshold,
+            strict=args.strict,
+            metadata=args.metadata,
+        )
     except Exception as exc:
         report = PreflightReport(str(args.policy))
         report.findings.append(_runner_error("doctor", exc))

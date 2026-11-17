@@ -84,6 +84,17 @@ def test_cli_forwards_explicit_chronology_to_graph(checkpoints, tmp_path, monkey
         return original_builder(path, metadata_path=metadata_path)
 
     monkeypatch.setattr(graph, "build_processor_graph", build)
-    assert main(["--policy", str(checkpoint), "--metadata", str(metadata),
-                 "--graph", str(tmp_path / "graph.json")]) == 0
+    assert (
+        main(
+            [
+                "--policy",
+                str(checkpoint),
+                "--metadata",
+                str(metadata),
+                "--graph",
+                str(tmp_path / "graph.json"),
+            ]
+        )
+        == 0
+    )
     assert calls == [(checkpoint, metadata)]

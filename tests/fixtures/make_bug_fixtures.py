@@ -90,10 +90,16 @@ def _write_normalization_checkpoint(
 def _write_temporal_checkpoint(directory: Path) -> Path:
     directory.mkdir(parents=True, exist_ok=True)
     # Probe widths are declared contracts, never inferred from action dimensions.
-    (directory / "config.json").write_text(json.dumps({
-        "input_features": {OBSERVATION_KEY: {"type": "STATE", "shape": [STATE_DIM]}},
-        "output_features": {ACTION_KEY: {"type": "ACTION", "shape": [STATE_DIM]}},
-    }, indent=2) + "\n")
+    (directory / "config.json").write_text(
+        json.dumps(
+            {
+                "input_features": {OBSERVATION_KEY: {"type": "STATE", "shape": [STATE_DIM]}},
+                "output_features": {ACTION_KEY: {"type": "ACTION", "shape": [STATE_DIM]}},
+            },
+            indent=2,
+        )
+        + "\n"
+    )
     relative_step = RelativeActionsProcessorStep(enabled=True)
     preprocessor = PolicyProcessorPipeline(name="policy_preprocessor", steps=[relative_step])
     postprocessor = PolicyProcessorPipeline(
@@ -132,8 +138,7 @@ def _write_legacy_checkpoint(directory: Path) -> Path:
         stats={ACTION_KEY: legacy_action_stats},
     )
     embedded_state = {
-        f"unnormalize_outputs.buffer_{key}": tensor
-        for key, tensor in legacy_step.state_dict().items()
+        f"unnormalize_outputs.buffer_{key}": tensor for key, tensor in legacy_step.state_dict().items()
     }
     save_file(embedded_state, directory / "model.safetensors")
     return directory
@@ -169,8 +174,6 @@ def make_bug_fixtures(output_root: str | Path) -> dict[str, Path]:
         _stats(observation_std=fp16_std),
         np.zeros((1, STATE_DIM), dtype=np.float16),
     )
-    fixtures["bug_5315_temporal_anchor"] = _write_temporal_checkpoint(
-        root / "bug_5315_temporal_anchor"
-    )
+    fixtures["bug_5315_temporal_anchor"] = _write_temporal_checkpoint(root / "bug_5315_temporal_anchor")
     fixtures["legacy_act_embedded"] = _write_legacy_checkpoint(root / "legacy_act_embedded")
     return fixtures

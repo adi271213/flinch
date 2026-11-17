@@ -1,4 +1,5 @@
 recursive-include tests *.py
 recursive-include scripts *.py
 recursive-include docs *.md
-include AGENTS.md CONTRIBUTING.md SECURITY.md
+include AGENTS.md CONTRIBUTING.md SECURITY.md LICENSE .editorconfig .env.example
+recursive-include .github *.md *.yml

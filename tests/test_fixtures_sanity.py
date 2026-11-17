@@ -59,9 +59,7 @@ def test_clean_modern_checkpoint_round_trips_and_normalizes(checkpoints: dict[st
     assert all(path.is_file() for path in pre_state_files + post_state_files)
 
     pre_state = load_file(pre_state_files[0])
-    assert {"observation.state.mean", "observation.state.std", "action.mean", "action.std"} <= set(
-        pre_state
-    )
+    assert {"observation.state.mean", "observation.state.std", "action.mean", "action.std"} <= set(pre_state)
     preprocessor = _pipeline(checkpoint)
     postprocessor = _pipeline(checkpoint, "postprocessor_config.json")
     assert isinstance(preprocessor.steps[0], NormalizerProcessorStep)

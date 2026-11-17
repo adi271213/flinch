@@ -77,7 +77,8 @@ def _finding(
 
 
 def _declarations(
-    root: Path, metadata_path: Path | None = None,
+    root: Path,
+    metadata_path: Path | None = None,
 ) -> tuple[dict[str, list[tuple[Path, Any]]], list[Path]]:
     """Read native config and only the caller's explicitly selected sidecar."""
     declared: dict[str, list[tuple[Path, Any]]] = {
@@ -123,7 +124,8 @@ def _declarations(
 
 
 def _resolve_metadata(
-    root: Path, metadata_path: Path | None = None,
+    root: Path,
+    metadata_path: Path | None = None,
 ) -> tuple[dict[str, Any] | None, DiagnosticFinding | None]:
     declared, invalid = _declarations(root, metadata_path)
     if invalid:
@@ -145,9 +147,7 @@ def _resolve_metadata(
                 f"Explicit temporal declarations disagree for {field}.",
                 {
                     "field": "temporal_observation_ordering" if field == "observation_order" else field,
-                    "declarations": [
-                        {"file_path": str(path), "value": value} for path, value in entries
-                    ],
+                    "declarations": [{"file_path": str(path), "value": value} for path, value in entries],
                 },
                 _provenance(entries[0][0], tensor_key=field),
             )
@@ -160,18 +160,28 @@ def _resolve_metadata(
     effective_deltas = state_deltas if state_entries else deltas
     delta_key = "state_observation_delta_indices" if state_entries else "observation_delta_indices"
     delta_source = f"config.{delta_key}"
-    delta_provenance = _provenance(effective_entries[0][0], tensor_key=delta_key) if effective_entries else None
+    delta_provenance = (
+        _provenance(effective_entries[0][0], tensor_key=delta_key) if effective_entries else None
+    )
     if state_entries and (
-        not isinstance(state_deltas, (list, tuple)) or not state_deltas
-        or not all(type(value) is int or (type(value) is float and math.isfinite(value)) for value in state_deltas)
+        not isinstance(state_deltas, (list, tuple))
+        or not state_deltas
+        or not all(
+            type(value) is int or (type(value) is float and math.isfinite(value)) for value in state_deltas
+        )
         or (len(state_deltas) == 1 and state_deltas[0] != 0)
     ):
         return None, _finding(
             DiagnosticStatus.UNKNOWN,
             "State-specific delta indices are invalid; generic observation deltas cannot replace that contract.",
-            {"observation_delta_indices": deltas, "state_observation_delta_indices": state_deltas,
-             "effective_state_delta_indices": state_deltas, "state_delta_indices_source": delta_source,
-             "required_coverage": True}, delta_provenance,
+            {
+                "observation_delta_indices": deltas,
+                "state_observation_delta_indices": state_deltas,
+                "effective_state_delta_indices": state_deltas,
+                "state_delta_indices_source": delta_source,
+                "required_coverage": True,
+            },
+            delta_provenance,
         )
     delta_count = (
         len(effective_deltas)
@@ -199,9 +209,13 @@ def _resolve_metadata(
         return None, _finding(
             DiagnosticStatus.UNKNOWN,
             "The current observation frame cannot be identified from checkpoint metadata.",
-            {"missing_declarations": missing, "observation_delta_indices": deltas,
-             "state_observation_delta_indices": state_deltas, "effective_state_delta_indices": effective_deltas,
-             "state_delta_indices_source": delta_source if effective_entries else None},
+            {
+                "missing_declarations": missing,
+                "observation_delta_indices": deltas,
+                "state_observation_delta_indices": state_deltas,
+                "effective_state_delta_indices": effective_deltas,
+                "state_delta_indices_source": delta_source if effective_entries else None,
+            },
             delta_provenance,
         )
     if type(count) is not int or count < 1:
@@ -209,7 +223,9 @@ def _resolve_metadata(
             DiagnosticStatus.UNKNOWN,
             "n_obs_steps must be a positive integer for a temporal anchor probe.",
             {"n_obs_steps": count},
-            _provenance(declared["n_obs_steps"][0][0], tensor_key="n_obs_steps") if declared["n_obs_steps"] else None,
+            _provenance(declared["n_obs_steps"][0][0], tensor_key="n_obs_steps")
+            if declared["n_obs_steps"]
+            else None,
         )
     if order is not None and (not isinstance(order, str) or order not in _ORDER_CURRENT_INDEX):
         return None, _finding(
@@ -234,6 +250,7 @@ def _resolve_metadata(
                 {"n_obs_steps": count, "current_index": value},
                 _provenance(path, tensor_key="current_index"),
             )
+        assert current is not None
         if value % count != current % count:
             return None, _finding(
                 DiagnosticStatus.CONFLICT,
@@ -270,11 +287,18 @@ def _resolve_metadata(
             _provenance(path, tensor_key="current_index"),
         )
     chronology_source = (
-        "explicit_metadata" if explicit_chronology and metadata_path is not None and any(
+        "explicit_metadata"
+        if explicit_chronology
+        and metadata_path is not None
+        and any(
             path == Path(metadata_path).resolve()
             for path, _ in declared["observation_order"] + declared["current_index"]
-        ) else "config_explicit_chronology" if explicit_chronology else
-        delta_source if inferred_order is not None or (state_entries and state_deltas == [0]) else "single_frame"
+        )
+        else "config_explicit_chronology"
+        if explicit_chronology
+        else delta_source
+        if inferred_order is not None or (state_entries and state_deltas == [0])
+        else "single_frame"
     )
     return {
         "n_obs_steps": count,
@@ -334,8 +358,14 @@ def _probe(
         return _finding(
             DiagnosticStatus.UNKNOWN,
             "Undeclared action dimension prevents temporal compatibility verification.",
-            {"step_index": relative_index, "feature_key": ACTION, "declared_action_dim": None,
-             "dimension_compatibility_verified": False, "processor_steps_executed": 0, **metadata},
+            {
+                "step_index": relative_index,
+                "feature_key": ACTION,
+                "declared_action_dim": None,
+                "dimension_compatibility_verified": False,
+                "processor_steps_executed": 0,
+                **metadata,
+            },
             _step_provenance(config_path, saved_config, relative_index, ACTION),
         )
     state_dim = _feature_width(root, pre, post, OBS_STATE)
@@ -352,40 +382,68 @@ def _probe(
         return _finding(
             DiagnosticStatus.FAIL,
             "The declared state width cannot satisfy the native relative-action mask.",
-            {"step_index": relative_index, "step_class": type(relative).__name__,
-             "pipeline_role": "preprocessor", "feature_key": OBS_STATE,
-             "declared_state_dim": state_dim, "declared_action_dim": action_dim,
-             "relative_action_mask": mask, "required_state_width": len(mask),
-             "missing_state_coordinates": missing, "tensor_slice": [],
-             "synthetic_state_shape": [1, count, state_dim],
-             "dimension_compatibility_verified": False, "processor_steps_executed": 0, **metadata},
+            {
+                "step_index": relative_index,
+                "step_class": type(relative).__name__,
+                "pipeline_role": "preprocessor",
+                "feature_key": OBS_STATE,
+                "declared_state_dim": state_dim,
+                "declared_action_dim": action_dim,
+                "relative_action_mask": mask,
+                "required_state_width": len(mask),
+                "missing_state_coordinates": missing,
+                "tensor_slice": [],
+                "synthetic_state_shape": [1, count, state_dim],
+                "dimension_compatibility_verified": False,
+                "processor_steps_executed": 0,
+                **metadata,
+            },
             _step_provenance(config_path, saved_config, relative_index, OBS_STATE, missing),
         )
     probe_dim = next((index for index, enabled in enumerate(mask) if enabled), None)
     inactive_mask = probe_dim is None
-    probe_dim = 0 if inactive_mask else probe_dim
-    provenance = _step_provenance(config_path, saved_config, relative_index, OBS_STATE,
-                                  [] if inactive_mask else [probe_dim])
+    probe_dim = 0 if probe_dim is None else probe_dim
+    provenance = _step_provenance(
+        config_path, saved_config, relative_index, OBS_STATE, [] if inactive_mask else [probe_dim]
+    )
 
     state = (
-        torch.arange(count, dtype=torch.float32).mul(0.25).add(0.20)
-        .view(1, count, 1).expand(1, count, state_dim).clone()
+        torch.arange(count, dtype=torch.float32)
+        .mul(0.25)
+        .add(0.20)
+        .view(1, count, 1)
+        .expand(1, count, state_dim)
+        .clone()
     )
     action = torch.full((1, 1, action_dim), 0.90, dtype=torch.float32)
     captured: dict[str, torch.Tensor] = {}
     precision_sources: list[dict[str, Any]] = []
     dtype_epsilons: dict[str, float] = {}
 
-    def observe_precision(tensor: Any, source: str, role: str, index: int | None = None,
-                          *, arithmetic_dtype: bool = True, tensor_key: str = ACTION) -> None:
+    def observe_precision(
+        tensor: Any,
+        source: str,
+        role: str,
+        index: int | None = None,
+        *,
+        arithmetic_dtype: bool = True,
+        tensor_key: str = ACTION,
+    ) -> None:
         if not isinstance(tensor, torch.Tensor) or not tensor.is_floating_point():
             return
         values = tensor.detach().double()
         finite = values[torch.isfinite(values)]
         magnitude = float(finite.abs().max()) if finite.numel() else 0.0
-        precision_sources.append({"source": source, "pipeline_role": role, "step_index": index,
-                                  "tensor_key": tensor_key, "dtype": str(tensor.dtype),
-                                  "max_absolute_value": magnitude})
+        precision_sources.append(
+            {
+                "source": source,
+                "pipeline_role": role,
+                "step_index": index,
+                "tensor_key": tensor_key,
+                "dtype": str(tensor.dtype),
+                "max_absolute_value": magnitude,
+            }
+        )
         if arithmetic_dtype:
             dtype_epsilons[str(tensor.dtype)] = torch.finfo(tensor.dtype).eps
 
@@ -396,19 +454,29 @@ def _probe(
                 mode = step.norm_map.get(FeatureType.ACTION)
                 for stat in _MODE_STATS.get(mode, ()):
                     key = f"{ACTION}.{stat}"
-                    observe_precision(step.state_dict().get(key), "active_action_constant", role, index,
-                                      arithmetic_dtype=False, tensor_key=key)
+                    observe_precision(
+                        step.state_dict().get(key),
+                        "active_action_constant",
+                        role,
+                        index,
+                        arithmetic_dtype=False,
+                        tensor_key=key,
+                    )
 
     def precision_budget() -> dict[str, Any]:
         scale = max((item["max_absolute_value"] for item in precision_sources), default=1.0)
         epsilon = max(dtype_epsilons.values(), default=torch.finfo(torch.float32).eps)
-        return {"max_intermediate_scale": scale, "machine_epsilon": epsilon,
-                "safety_factor": _ROUNDTRIP_SAFETY_FACTOR,
-                "roundoff_atol": epsilon * scale * _ROUNDTRIP_SAFETY_FACTOR,
-                "dtype_epsilons": dict(dtype_epsilons), "sources": list(precision_sources)}
+        return {
+            "max_intermediate_scale": scale,
+            "machine_epsilon": epsilon,
+            "safety_factor": _ROUNDTRIP_SAFETY_FACTOR,
+            "roundoff_atol": epsilon * scale * _ROUNDTRIP_SAFETY_FACTOR,
+            "dtype_epsilons": dict(dtype_epsilons),
+            "sources": list(precision_sources),
+        }
 
     def effective_atol() -> float:
-        return max(_ROUNDTRIP_ATOL, precision_budget()["roundoff_atol"])
+        return float(max(_ROUNDTRIP_ATOL, precision_budget()["roundoff_atol"]))
 
     def before(index: int, transition: EnvTransition) -> None:
         observe_precision(transition.get(TransitionKey.ACTION), "step_input", "preprocessor", index)
@@ -447,14 +515,19 @@ def _probe(
     entered_action = captured.get("action_before")
     observed_action = captured.get("action_after")
     if (
-        entered_state is None or entered_action is None or observed_action is None
-        or entered_state.ndim != 3 or entered_state.shape[1] != count
-        or entered_action.ndim != 3 or observed_action.shape != entered_action.shape
+        entered_state is None
+        or entered_action is None
+        or observed_action is None
+        or entered_state.ndim != 3
+        or entered_state.shape[1] != count
+        or entered_action.ndim != 3
+        or observed_action.shape != entered_action.shape
     ):
         return _finding(
             DiagnosticStatus.FAIL if pipeline_error is not None else DiagnosticStatus.UNKNOWN,
-            "The native forward relative-action probe failed." if pipeline_error is not None else
-            "The native relative step did not receive the declared temporal tensor shape.",
+            "The native forward relative-action probe failed."
+            if pipeline_error is not None
+            else "The native relative step did not receive the declared temporal tensor shape.",
             {
                 "step_index": relative_index,
                 "step_class": type(relative).__name__,
@@ -485,6 +558,7 @@ def _probe(
     if processed is not None and any(
         isinstance(step, AbsoluteActionsProcessorStep) and step.enabled for step in post.steps
     ):
+
         def inverse_before(index: int, transition: EnvTransition) -> None:
             observe_precision(transition.get(TransitionKey.ACTION), "step_input", "postprocessor", index)
 
@@ -500,9 +574,14 @@ def _probe(
             if isinstance(result, torch.Tensor) and result.shape == action.shape:
                 difference = (result.double() - action.double()).abs()
                 roundtrip_max_error = float(difference.max())
-                roundtrip = bool(torch.isfinite(result).all()) and bool(torch.allclose(
-                    result.double(), action.double(), atol=effective_atol(), rtol=_ROUNDTRIP_RTOL,
-                ))
+                roundtrip = bool(torch.isfinite(result).all()) and bool(
+                    torch.allclose(
+                        result.double(),
+                        action.double(),
+                        atol=effective_atol(),
+                        rtol=_ROUNDTRIP_RTOL,
+                    )
+                )
                 roundtrip_slice = [float(result[0, 0, probe_dim])]
             else:
                 roundtrip = False
@@ -516,8 +595,11 @@ def _probe(
 
     # Cancellation when recovering the anchor has the same intermediate-scale
     # rounding exposure as the full round trip, not just the final ~0.9 output.
-    matches = torch.isclose(candidate_anchors, observed_anchor, rtol=_ROUNDTRIP_RTOL,
-                            atol=effective_atol()).nonzero().flatten()
+    matches = (
+        torch.isclose(candidate_anchors, observed_anchor, rtol=_ROUNDTRIP_RTOL, atol=effective_atol())
+        .nonzero()
+        .flatten()
+    )
     actual_index = int(matches[0]) if matches.numel() == 1 else None
 
     details = {
@@ -560,7 +642,8 @@ def _probe(
         return _finding(
             DiagnosticStatus.PASS,
             "All action coordinates are excluded from relative conversion; native probes confirm no active anchor offset.",
-            {**details, "actual_anchor_index": None, "temporal_anchor_applied": False}, provenance,
+            {**details, "actual_anchor_index": None, "temporal_anchor_applied": False},
+            provenance,
         )
     if actual_index is None:
         return _finding(
@@ -586,14 +669,16 @@ def _probe(
     return _finding(
         DiagnosticStatus.PASS,
         "Single-frame relative-action compatibility was verified; no multi-step observation history is present."
-        if count == 1 else "Native relative action conversion uses the declared current observation frame and has an inverse round-trip within numerical tolerance.",
+        if count == 1
+        else "Native relative action conversion uses the declared current observation frame and has an inverse round-trip within numerical tolerance.",
         details,
         provenance,
     )
 
 
 def run_temporal_audit(
-    checkpoint_dir: Path, metadata_path: Path | None = None,
+    checkpoint_dir: Path,
+    metadata_path: Path | None = None,
 ) -> list[DiagnosticFinding]:
     """Compare native anchoring with config declarations and an opt-in sidecar."""
     from .trace import _load_processor_pair, _step_provenance, _TraceLoadError
@@ -607,35 +692,43 @@ def run_temporal_audit(
     pre, config_path, saved_config = pre_triple
     post, post_config_path, post_saved_config = post_triple
     relative_indices = [
-        index for index, step in enumerate(pre.steps)
+        index
+        for index, step in enumerate(pre.steps)
         if isinstance(step, RelativeActionsProcessorStep) and step.enabled
     ]
     if not relative_indices:
         absolute_indices = [
-            index for index, step in enumerate(post.steps)
+            index
+            for index, step in enumerate(post.steps)
             if isinstance(step, AbsoluteActionsProcessorStep) and step.enabled
         ]
         if absolute_indices:
             index = absolute_indices[0]
-            return [_finding(
-                DiagnosticStatus.UNKNOWN,
-                "An enabled absolute-action step has no enabled relative-action anchor.",
-                {"step_index": index, "feature_key": OBS_STATE},
-                _step_provenance(post_config_path, post_saved_config, index, OBS_STATE),
-            )]
-        return [_finding(
-            DiagnosticStatus.PASS,
-            "No enabled relative-action conversion requires a temporal anchor.",
-            {"feature_key": OBS_STATE},
-            _provenance(config_path),
-        )]
+            return [
+                _finding(
+                    DiagnosticStatus.UNKNOWN,
+                    "An enabled absolute-action step has no enabled relative-action anchor.",
+                    {"step_index": index, "feature_key": OBS_STATE},
+                    _step_provenance(post_config_path, post_saved_config, index, OBS_STATE),
+                )
+            ]
+        return [
+            _finding(
+                DiagnosticStatus.PASS,
+                "No enabled relative-action conversion requires a temporal anchor.",
+                {"feature_key": OBS_STATE},
+                _provenance(config_path),
+            )
+        ]
     if len(relative_indices) != 1:
-        return [_finding(
-            DiagnosticStatus.UNKNOWN,
-            "Multiple enabled relative-action steps make the temporal anchor ambiguous.",
-            {"step_indices": relative_indices, "feature_key": OBS_STATE},
-            _provenance(config_path),
-        )]
+        return [
+            _finding(
+                DiagnosticStatus.UNKNOWN,
+                "Multiple enabled relative-action steps make the temporal anchor ambiguous.",
+                {"step_indices": relative_indices, "feature_key": OBS_STATE},
+                _provenance(config_path),
+            )
+        ]
     metadata, problem = _resolve_metadata(root, metadata_path)
     if problem is not None:
         return [problem]

@@ -41,10 +41,16 @@ jobs:
           cache-dependency-path: pyproject.toml
 
       - name: Install packaging tools
-        run: python -m pip install --upgrade pip build twine ruff==0.17.5
+        run: python -m pip install --upgrade pip build twine mypy==2.4.1 ruff==0.17.5
 
       - name: Check Python source and import hygiene
         run: python -m ruff check src scripts tests
+
+      - name: Check Python formatting
+        run: python -m ruff format --check src scripts tests
+
+      - name: Check strict project types
+        run: python -m mypy
 
       - name: Build isolated distributions
         run: python -m build --outdir dist

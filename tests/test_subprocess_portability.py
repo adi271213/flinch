@@ -16,8 +16,10 @@ from tests.subprocess_env import source_subprocess_env
 
 
 def test_source_subprocess_env_preserves_dependency_pythonpath(tmp_path):
-    incoming = {"PYTHONPATH": os.pathsep.join([str(tmp_path / "released-lerobot"), str(tmp_path / "another")]),
-                "HF_HUB_OFFLINE": "1"}
+    incoming = {
+        "PYTHONPATH": os.pathsep.join([str(tmp_path / "released-lerobot"), str(tmp_path / "another")]),
+        "HF_HUB_OFFLINE": "1",
+    }
     unchanged = dict(incoming)
     env = source_subprocess_env(incoming)
     source = str(Path(__file__).resolve().parents[1] / "src")
@@ -32,12 +34,20 @@ def test_cli_source_subprocess_detects_bypass_without_editable_install(tmp_path)
     source = Path(__file__).resolve().parents[1] / "src"
     expected_lerobot = Path(lerobot.__file__).resolve()
     env = source_subprocess_env()
-    env["DOCTOR_TEST_DEPENDENCY_PATHS"] = json.dumps(list(dict.fromkeys([
-        sysconfig.get_path("purelib"), sysconfig.get_path("platlib"), str(expected_lerobot.parents[1]),
-    ])))
+    env["DOCTOR_TEST_DEPENDENCY_PATHS"] = json.dumps(
+        list(
+            dict.fromkeys(
+                [
+                    sysconfig.get_path("purelib"),
+                    sysconfig.get_path("platlib"),
+                    str(expected_lerobot.parents[1]),
+                ]
+            )
+        )
+    )
     env["HF_HUB_OFFLINE"] = "1"
     env["TRANSFORMERS_OFFLINE"] = "1"
-    script = '''
+    script = """
 import json, os, sys
 from pathlib import Path
 # -S disables site initialization and every .pth editable-install hook. Add only
@@ -60,10 +70,14 @@ checkpoint = Path(sys.argv[3])
 result = main(["--policy", str(checkpoint), "--sample", str(checkpoint / "sample_observation.npz")])
 assert result == 1
 print("source CLI detected SILENT_STEP_BYPASS without editable installation")
-'''
+"""
     result = subprocess.run(
         [sys.executable, "-S", "-c", script, str(source), str(expected_lerobot), str(checkpoint)],
-        cwd=tmp_path, env=env, capture_output=True, text=True, check=False,
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
     )
     assert result.returncode == 0, result.stderr
     assert "SILENT_STEP_BYPASS" in result.stdout

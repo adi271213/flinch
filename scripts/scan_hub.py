@@ -52,26 +52,53 @@ def _print_summary(report: dict[str, Any], json_path: Path, markdown_path: Path)
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--limit", type=int, default=30,
-                        help="Maximum repositories to scan (1-100; default: 30)")
-    parser.add_argument("--targeted", action="store_true",
-                        help="Balance tagged policy-family candidates; filter asset-only repository listings")
-    parser.add_argument("--repo", action="append", dest="repos", metavar="REPO_ID",
-                        help="Scan this repository; repeat for multiple repositories")
-    parser.add_argument("--output-dir", type=Path, default=Path.cwd(),
-                        help="Directory for JSON and Markdown reports (default: current directory)")
-    parser.add_argument("--report-name", default="hub_audit_report",
-                        help="Output filename stem, e.g. hub_100_report")
-    parser.add_argument("--snapshot-dir", type=Path,
-                        help="Optional local directory for downloaded checkpoint snapshots")
-    parser.add_argument("--cached-report", action="append", type=Path, dest="cached_reports",
-                        help="Re-audit pinned snapshots from this prior JSON report; repeat to combine reports")
-    parser.add_argument("--fetch-legacy-stats", action="store_true",
-                        help="Fetch tiny legacy normalization tensor ranges when re-auditing cached snapshots")
-    parser.add_argument("--repo-file-evidence", type=Path,
-                        help="Pinned repository file lists to supplement older cached reports")
-    parser.add_argument("--std-threshold", type=float, default=1e-4,
-                        help="Small standard-deviation threshold (default: 1e-4)")
+    parser.add_argument(
+        "--limit", type=int, default=30, help="Maximum repositories to scan (1-100; default: 30)"
+    )
+    parser.add_argument(
+        "--targeted",
+        action="store_true",
+        help="Balance tagged policy-family candidates; filter asset-only repository listings",
+    )
+    parser.add_argument(
+        "--repo",
+        action="append",
+        dest="repos",
+        metavar="REPO_ID",
+        help="Scan this repository; repeat for multiple repositories",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path.cwd(),
+        help="Directory for JSON and Markdown reports (default: current directory)",
+    )
+    parser.add_argument(
+        "--report-name", default="hub_audit_report", help="Output filename stem, e.g. hub_100_report"
+    )
+    parser.add_argument(
+        "--snapshot-dir", type=Path, help="Optional local directory for downloaded checkpoint snapshots"
+    )
+    parser.add_argument(
+        "--cached-report",
+        action="append",
+        type=Path,
+        dest="cached_reports",
+        help="Re-audit pinned snapshots from this prior JSON report; repeat to combine reports",
+    )
+    parser.add_argument(
+        "--fetch-legacy-stats",
+        action="store_true",
+        help="Fetch tiny legacy normalization tensor ranges when re-auditing cached snapshots",
+    )
+    parser.add_argument(
+        "--repo-file-evidence",
+        type=Path,
+        help="Pinned repository file lists to supplement older cached reports",
+    )
+    parser.add_argument(
+        "--std-threshold", type=float, default=1e-4, help="Small standard-deviation threshold (default: 1e-4)"
+    )
     args = parser.parse_args(argv)
     if not 1 <= args.limit <= 100:
         parser.error("--limit must be between 1 and 100")

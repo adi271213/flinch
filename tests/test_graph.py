@@ -40,15 +40,20 @@ def _nodes(graph, kind):
     return [node for node in graph["nodes"] if node["type"] == kind]
 
 
-@pytest.mark.parametrize("entry", [
-    {"registry_name": ["normalizer_processor"], "config": {}},
-    {"registry_name": {"name": "normalizer_processor"}, "config": {}},
-    {"class": ["lerobot.processor.normalize_processor.NormalizerProcessorStep"], "config": {}},
-    {"registry_name": "normalizer_processor", "config": []},
-    {"registry_name": "normalizer_processor", "state_file": ["buffers.safetensors"]},
-])
+@pytest.mark.parametrize(
+    "entry",
+    [
+        {"registry_name": ["normalizer_processor"], "config": {}},
+        {"registry_name": {"name": "normalizer_processor"}, "config": {}},
+        {"class": ["lerobot.processor.normalize_processor.NormalizerProcessorStep"], "config": {}},
+        {"registry_name": "normalizer_processor", "config": []},
+        {"registry_name": "normalizer_processor", "state_file": ["buffers.safetensors"]},
+    ],
+)
 def test_graph_retains_malformed_steps_as_unknown_before_native_construction(
-    checkpoints, monkeypatch, entry,
+    checkpoints,
+    monkeypatch,
+    entry,
 ):
     checkpoint = checkpoints["bug_4415_silent_bypass"]
     for filename, steps in (("preprocessor_config.json", [entry]), ("postprocessor_config.json", [])):
@@ -63,25 +68,33 @@ def test_graph_retains_malformed_steps_as_unknown_before_native_construction(
     monkeypatch.setattr(NormalizerProcessorStep, "__init__", forbidden_constructor)
     graph = build_processor_graph(checkpoint)
     assert graph["summary"]["coverage_status"] == "UNKNOWN"
-    assert graph["summary"]["unknown_step_boundaries"] == [{
-        "file_path": "preprocessor_config.json", "step_index": 0,
-        "class_name": "invalid_step_declaration",
-    }]
-    assert any(error["status"] == "UNKNOWN" and "Invalid step 0" in error["reason"]
-               for error in graph["summary"]["errors"])
+    assert graph["summary"]["unknown_step_boundaries"] == [
+        {
+            "file_path": "preprocessor_config.json",
+            "step_index": 0,
+            "class_name": "invalid_step_declaration",
+        }
+    ]
+    assert any(
+        error["status"] == "UNKNOWN" and "Invalid step 0" in error["reason"]
+        for error in graph["summary"]["errors"]
+    )
 
 
 def test_graph_4415_records_missing_namespace_and_exact_prefixed_keys(checkpoints):
     checkpoint = checkpoints["bug_4415_silent_bypass"]
     graph = build_processor_graph(checkpoint)
-    bypass, = _edges(graph, "UNBOUND_BYPASS")
+    (bypass,) = _edges(graph, "UNBOUND_BYPASS")
     assert bypass["properties"]["missing_keys"] == ["observation.state.mean", "observation.state.std"]
     assert bypass["properties"]["step_index"] == 0
     assert bypass["properties"]["normalization_mode"] == "MEAN_STD"
     assert "wrong_dataset/observation.state.std" in bypass["properties"]["available_buffer_keys"]
     buffer = next(node for node in _nodes(graph, "stat_buffer") if "preprocessor" in node["label"])
     assert buffer["properties"]["matched_keys"] == ["action.mean", "action.std"]
-    assert buffer["properties"]["unbound_keys"] == ["wrong_dataset/observation.state.mean", "wrong_dataset/observation.state.std"]
+    assert buffer["properties"]["unbound_keys"] == [
+        "wrong_dataset/observation.state.mean",
+        "wrong_dataset/observation.state.std",
+    ]
     assert len(buffer["properties"]["sha256"]) == 64
     text = processor_graph_to_mermaid(graph)
     assert "UNBOUND_BYPASS" in text and "wrong_dataset/observation.state.std" in text
@@ -92,14 +105,20 @@ def test_graph_gain_uses_active_mode_epsilon_and_explicit_dtype(checkpoints):
     checkpoint = checkpoints["bug_5289_pathological_gain"]
     path = checkpoint / "preprocessor_config.json"
     config = json.loads(path.read_text())
-    config["steps"].insert(0, {"registry_name": "device_processor", "config": {"device": "cuda", "float_dtype": "float32"}})
+    config["steps"].insert(
+        0, {"registry_name": "device_processor", "config": {"device": "cuda", "float_dtype": "float32"}}
+    )
     path.write_text(json.dumps(config))
     graph = build_processor_graph(checkpoint)
-    transform, = [edge for edge in _edges(graph, "TRANSFORMS") if edge["properties"].get("feature_key") == "observation.state"
-                  and edge["properties"].get("normalization_mode") == "MEAN_STD"]
+    (transform,) = [
+        edge
+        for edge in _edges(graph, "TRANSFORMS")
+        if edge["properties"].get("feature_key") == "observation.state"
+        and edge["properties"].get("normalization_mode") == "MEAN_STD"
+    ]
     props = transform["properties"]
     assert props["max_forward_gain"] == pytest.approx(float(1 / (torch.tensor(1.48e-6) + 1e-8)))
-    assert props["max_inverse_gain"] == .5
+    assert props["max_inverse_gain"] == 0.5
     assert props["effective_dtype"] == "float32"
     assert props["gain_dtype_conditional"] is False
     assert props["step_index"] == 1
@@ -108,8 +127,11 @@ def test_graph_gain_uses_active_mode_epsilon_and_explicit_dtype(checkpoints):
 def test_undeclared_runtime_dtype_is_not_invented(checkpoints):
     graph = build_processor_graph(checkpoints["clean_act_modern"])
     assert all(node["properties"]["active_dtype"] is None for node in _nodes(graph, "processor_step"))
-    transform = next(edge["properties"] for edge in _edges(graph, "TRANSFORMS")
-                     if edge["properties"].get("direction") == "forward")
+    transform = next(
+        edge["properties"]
+        for edge in _edges(graph, "TRANSFORMS")
+        if edge["properties"].get("direction") == "forward"
+    )
     assert transform["effective_dtype"] is None
     assert transform["gain_dtype_conditional"] is True
     assert transform["gain_evaluation_dtype"] == "float32"
@@ -125,7 +147,7 @@ def test_partial_stats_are_contract_failure_not_silent_bypass(checkpoints):
     save_file(tensors, state_path)
     graph = build_processor_graph(checkpoint)
     assert not _edges(graph, "UNBOUND_BYPASS")
-    mismatch, = _edges(graph, "CONTRACT_MISMATCH")
+    (mismatch,) = _edges(graph, "CONTRACT_MISMATCH")
     assert mismatch["properties"]["runtime_behavior"] == "native raises for incomplete stats"
 
 
@@ -134,29 +156,49 @@ def test_inline_stats_override_and_orphan_files_remain_distinct(checkpoints):
     path = checkpoint / "preprocessor_config.json"
     config = json.loads(path.read_text())
     config["steps"][0]["config"]["stats"] = {
-        "observation.state": {"mean": [0.] * 14, "std": [.25] * 14},
-        "action": {"mean": [0.] * 14, "std": [.25] * 14},
+        "observation.state": {"mean": [0.0] * 14, "std": [0.25] * 14},
+        "action": {"mean": [0.0] * 14, "std": [0.25] * 14},
     }
     path.write_text(json.dumps(config))
-    save_file({"dataset.index.std": torch.tensor([0.])}, checkpoint / "policy_preprocessor_step_99_unused.safetensors")
+    save_file(
+        {"dataset.index.std": torch.tensor([0.0])},
+        checkpoint / "policy_preprocessor_step_99_unused.safetensors",
+    )
     graph = build_processor_graph(checkpoint)
-    inline, = [node for node in _nodes(graph, "stat_buffer") if node["properties"].get("source_kind") == "inline"]
+    (inline,) = [
+        node for node in _nodes(graph, "stat_buffer") if node["properties"].get("source_kind") == "inline"
+    ]
     assert len(inline["properties"]["inline_stats_sha256"]) == 64
-    assert inline["properties"]["matched_keys"] == ["action.mean", "action.std", "observation.state.mean", "observation.state.std"]
-    orphan, = [node for node in _nodes(graph, "stat_buffer") if node["properties"].get("orphan")]
+    assert inline["properties"]["matched_keys"] == [
+        "action.mean",
+        "action.std",
+        "observation.state.mean",
+        "observation.state.std",
+    ]
+    (orphan,) = [node for node in _nodes(graph, "stat_buffer") if node["properties"].get("orphan")]
     assert orphan["properties"]["unbound_keys"] == ["dataset.index.std"]
     assert not [edge for edge in graph["edges"] if edge["target"] == orphan["id"]]
-    transform = next(edge["properties"] for edge in _edges(graph, "TRANSFORMS")
-                     if edge["properties"].get("direction") == "forward")
-    assert transform["max_forward_gain"] == pytest.approx(4.)
+    transform = next(
+        edge["properties"]
+        for edge in _edges(graph, "TRANSFORMS")
+        if edge["properties"].get("direction") == "forward"
+    )
+    assert transform["max_forward_gain"] == pytest.approx(4.0)
 
 
 def test_graph_preserves_camera_and_shape_contract_drift(checkpoints):
     checkpoint = checkpoints["clean_act_modern"]
-    (checkpoint / "config.json").write_text(json.dumps({"input_features": {
-        "observation.state": {"type": "STATE", "shape": [7], "dtype": "float32"},
-        "observation.images.front": {"type": "VISUAL", "shape": [3, 16, 16]},
-    }, "output_features": {"action": {"type": "ACTION", "shape": [14]}}}))
+    (checkpoint / "config.json").write_text(
+        json.dumps(
+            {
+                "input_features": {
+                    "observation.state": {"type": "STATE", "shape": [7], "dtype": "float32"},
+                    "observation.images.front": {"type": "VISUAL", "shape": [3, 16, 16]},
+                },
+                "output_features": {"action": {"type": "ACTION", "shape": [14]}},
+            }
+        )
+    )
     path = checkpoint / "preprocessor_config.json"
     config = json.loads(path.read_text())
     config["steps"][0]["config"]["features"]["observation.image"] = {"type": "VISUAL", "shape": [3, 16, 16]}
@@ -164,7 +206,12 @@ def test_graph_preserves_camera_and_shape_contract_drift(checkpoints):
     path.write_text(json.dumps(config))
     graph = build_processor_graph(checkpoint)
     mismatches = [edge["properties"] for edge in _edges(graph, "CONTRACT_MISMATCH")]
-    assert any(item["feature_key"] == "observation.state" and item["actual_shape"] == [7] and item["expected_shape"] == [14] for item in mismatches)
+    assert any(
+        item["feature_key"] == "observation.state"
+        and item["actual_shape"] == [7]
+        and item["expected_shape"] == [14]
+        for item in mismatches
+    )
     camera = next(item for item in mismatches if item["feature_key"] == "observation.image")
     assert "observation.images.front" in camera["available_feature_keys"]
     assert camera["rename_map"] == {}
@@ -178,7 +225,7 @@ def test_graph_temporal_anchor_uses_declared_delta_chronology(checkpoints, delta
     config["observation_delta_indices"] = deltas
     path.write_text(json.dumps(config))
     graph = build_processor_graph(checkpoint)
-    anchor, = _edges(graph, "TEMPORAL_ANCHOR")
+    (anchor,) = _edges(graph, "TEMPORAL_ANCHOR")
     assert anchor["properties"]["native_collapse_index"] == 0
     assert anchor["properties"]["expected_anchor_index"] == expected
     assert anchor["properties"]["status"] == status
@@ -187,17 +234,33 @@ def test_graph_temporal_anchor_uses_declared_delta_chronology(checkpoints, delta
 def test_native_rename_is_visible_between_feature_versions(checkpoints):
     checkpoint = checkpoints["clean_act_modern"]
     features = {"observation.raw": PolicyFeature(FeatureType.STATE, (14,))}
-    normalizer = NormalizerProcessorStep(features=features, norm_map={FeatureType.STATE: NormalizationMode.MEAN_STD},
-        stats={"observation.raw": {"mean": torch.zeros(14), "std": torch.ones(14)}})
-    PolicyProcessorPipeline(name="policy_preprocessor", steps=[
-        RenameObservationsProcessorStep(rename_map={"observation.state": "observation.raw"}), normalizer,
-    ]).save_pretrained(checkpoint, config_filename="preprocessor_config.json")
-    (checkpoint / "config.json").write_text(json.dumps({"input_features": {
-        "observation.state": {"type": "STATE", "shape": [14]}},
-        "output_features": {"action": {"type": "ACTION", "shape": [14]}}}))
+    normalizer = NormalizerProcessorStep(
+        features=features,
+        norm_map={FeatureType.STATE: NormalizationMode.MEAN_STD},
+        stats={"observation.raw": {"mean": torch.zeros(14), "std": torch.ones(14)}},
+    )
+    PolicyProcessorPipeline(
+        name="policy_preprocessor",
+        steps=[
+            RenameObservationsProcessorStep(rename_map={"observation.state": "observation.raw"}),
+            normalizer,
+        ],
+    ).save_pretrained(checkpoint, config_filename="preprocessor_config.json")
+    (checkpoint / "config.json").write_text(
+        json.dumps(
+            {
+                "input_features": {"observation.state": {"type": "STATE", "shape": [14]}},
+                "output_features": {"action": {"type": "ACTION", "shape": [14]}},
+            }
+        )
+    )
     graph = build_processor_graph(checkpoint)
-    rename = next(edge["properties"] for edge in _edges(graph, "TRANSFORMS") if edge["properties"].get("rename_map")
-                  and edge["properties"].get("feature_key") == "observation.state")
+    rename = next(
+        edge["properties"]
+        for edge in _edges(graph, "TRANSFORMS")
+        if edge["properties"].get("rename_map")
+        and edge["properties"].get("feature_key") == "observation.state"
+    )
     assert rename["output_feature_key"] == "observation.raw"
     assert not _edges(graph, "CONTRACT_MISMATCH")
 
@@ -295,8 +358,10 @@ def test_missing_state_file_is_unknown_loading_failure_not_silent_bypass(checkpo
     graph = build_processor_graph(checkpoint)
     assert not _edges(graph, "UNBOUND_BYPASS")
     assert graph["summary"]["coverage_status"] == "UNKNOWN"
-    assert any(edge["properties"].get("runtime_behavior", "").startswith("state file loading failed")
-               for edge in _edges(graph, "CONTRACT_MISMATCH"))
+    assert any(
+        edge["properties"].get("runtime_behavior", "").startswith("state file loading failed")
+        for edge in _edges(graph, "CONTRACT_MISMATCH")
+    )
 
 
 def test_uninspected_step_breaks_shape_and_dtype_continuity(checkpoints):
@@ -308,9 +373,12 @@ def test_uninspected_step_breaks_shape_and_dtype_continuity(checkpoints):
     graph = build_processor_graph(checkpoint)
     assert graph["summary"]["coverage_status"] == "UNKNOWN"
     assert graph["summary"]["unknown_step_boundaries"][0]["step_index"] == 0
-    transform = next(edge["properties"] for edge in _edges(graph, "TRANSFORMS")
-                     if edge["properties"].get("normalization_mode") == "MEAN_STD"
-                     and edge["properties"].get("feature_key") == "observation.state")
+    transform = next(
+        edge["properties"]
+        for edge in _edges(graph, "TRANSFORMS")
+        if edge["properties"].get("normalization_mode") == "MEAN_STD"
+        and edge["properties"].get("feature_key") == "observation.state"
+    )
     assert transform["upstream_flow_verified"] is False
     assert transform["effective_dtype"] is None
     assert transform["gain_dtype_conditional"] is True
@@ -335,18 +403,35 @@ def test_invalid_gain_buffers_are_unknown_without_aborting_graph(checkpoints):
 
 def test_device_cast_preserves_explicit_integer_feature_dtype(checkpoints):
     checkpoint = checkpoints["clean_act_modern"]
-    (checkpoint / "config.json").write_text(json.dumps({"input_features": {
-        "observation.state": {"type": "STATE", "shape": [14], "dtype": "float16"},
-        "observation.images.front": {"type": "VISUAL", "shape": [3, 16, 16], "dtype": "uint8"},
-    }, "output_features": {"action": {"type": "ACTION", "shape": [14]}}}))
+    (checkpoint / "config.json").write_text(
+        json.dumps(
+            {
+                "input_features": {
+                    "observation.state": {"type": "STATE", "shape": [14], "dtype": "float16"},
+                    "observation.images.front": {"type": "VISUAL", "shape": [3, 16, 16], "dtype": "uint8"},
+                },
+                "output_features": {"action": {"type": "ACTION", "shape": [14]}},
+            }
+        )
+    )
     path = checkpoint / "preprocessor_config.json"
     config = json.loads(path.read_text())
-    config["steps"].insert(0, {"registry_name": "device_processor", "config": {"device": "cpu", "float_dtype": "float16"}})
+    config["steps"].insert(
+        0, {"registry_name": "device_processor", "config": {"device": "cpu", "float_dtype": "float16"}}
+    )
     path.write_text(json.dumps(config))
     graph = build_processor_graph(checkpoint)
     transforms = [edge["properties"] for edge in _edges(graph, "TRANSFORMS")]
-    assert all(edge["effective_dtype"] == "uint8" for edge in transforms if edge["feature_key"] == "observation.images.front")
-    state = next(edge for edge in transforms if edge["feature_key"] == "observation.state" and edge["normalization_mode"] == "MEAN_STD")
+    assert all(
+        edge["effective_dtype"] == "uint8"
+        for edge in transforms
+        if edge["feature_key"] == "observation.images.front"
+    )
+    state = next(
+        edge
+        for edge in transforms
+        if edge["feature_key"] == "observation.state" and edge["normalization_mode"] == "MEAN_STD"
+    )
     assert state["gain_evaluation_dtype"] == "float16"
 
 
@@ -357,12 +442,17 @@ def test_noncanonical_action_feature_has_no_phantom_normalization(checkpoints):
     config["steps"][0]["config"]["features"]["action.alias"] = {"type": "ACTION", "shape": [14]}
     path.write_text(json.dumps(config))
     graph = build_processor_graph(checkpoint)
-    alias = next(edge["properties"] for edge in _edges(graph, "TRANSFORMS") if edge["properties"].get("feature_key") == "action.alias")
+    alias = next(
+        edge["properties"]
+        for edge in _edges(graph, "TRANSFORMS")
+        if edge["properties"].get("feature_key") == "action.alias"
+    )
     assert alias["normalization_mode"] == "IDENTITY"
 
 
 def test_unreferenced_neural_weight_shards_are_never_read(checkpoints, monkeypatch):
     from lerobot_preflight import graph as module
+
     checkpoint = checkpoints["clean_act_modern"]
     shard = checkpoint / "model-00001-of-00002.safetensors"
     shard.write_bytes(b"not a processor; must not read")
@@ -390,7 +480,10 @@ def test_nested_identically_named_buffers_do_not_collapse_into_one_node(checkpoi
         config_path.write_text(json.dumps(config))
     graph = build_processor_graph(checkpoint)
     buffers = _nodes(graph, "stat_buffer")
-    assert {node["properties"]["file_path"] for node in buffers} == {"pre/stats.safetensors", "post/stats.safetensors"}
+    assert {node["properties"]["file_path"] for node in buffers} == {
+        "pre/stats.safetensors",
+        "post/stats.safetensors",
+    }
     assert len({node["id"] for node in buffers}) == 2
     assert len({node["properties"]["sha256"] for node in buffers}) == 2
 
@@ -407,33 +500,45 @@ def test_corrupt_tensor_file_is_unknown_instead_of_aborting_graph(checkpoints):
 def test_temporal_anchor_edge_uses_entering_state_and_no_false_output_cycle(checkpoints):
     checkpoint = checkpoints["bug_5315_temporal_anchor"]
     graph = build_processor_graph(checkpoint, metadata_path=checkpoint / "metadata.json")
-    anchor, = _edges(graph, "TEMPORAL_ANCHOR")
+    (anchor,) = _edges(graph, "TEMPORAL_ANCHOR")
     assert anchor["source"] != anchor["target"]
-    assert not any(edge["source"] == anchor["target"] and edge["target"] == anchor["source"]
-                   for edge in _edges(graph, "TRANSFORMS"))
+    assert not any(
+        edge["source"] == anchor["target"] and edge["target"] == anchor["source"]
+        for edge in _edges(graph, "TRANSFORMS")
+    )
     assert graph["summary"]["has_contract_failures"] is True
 
 
 def test_legacy_visual_paths_remain_unknown_and_header_digest_scope_is_visible(tmp_path, monkeypatch):
     from lerobot_preflight import graph as module
+
     checkpoint = tmp_path / "legacy"
     checkpoint.mkdir()
-    (checkpoint / "config.json").write_text(json.dumps({
-        "input_features": {
-            "observation.state": {"type": "STATE", "shape": [2]},
-            "observation.images.front": {"type": "VISUAL", "shape": [3, 16, 16]},
-        },
-        "output_features": {"action": {"type": "ACTION", "shape": [2]}},
-        "normalization_mapping": {"STATE": "MEAN_STD", "ACTION": "MEAN_STD", "VISUAL": "MEAN_STD"},
-    }))
-    state = {f"{group}.buffer_{key}.{stat}": torch.full((2,), value)
-             for group, key in (("normalize_inputs", "observation_state"), ("unnormalize_outputs", "action"))
-             for stat, value in (("mean", 0.), ("std", .5))}
+    (checkpoint / "config.json").write_text(
+        json.dumps(
+            {
+                "input_features": {
+                    "observation.state": {"type": "STATE", "shape": [2]},
+                    "observation.images.front": {"type": "VISUAL", "shape": [3, 16, 16]},
+                },
+                "output_features": {"action": {"type": "ACTION", "shape": [2]}},
+                "normalization_mapping": {"STATE": "MEAN_STD", "ACTION": "MEAN_STD", "VISUAL": "MEAN_STD"},
+            }
+        )
+    )
+    state = {
+        f"{group}.buffer_{key}.{stat}": torch.full((2,), value)
+        for group, key in (("normalize_inputs", "observation_state"), ("unnormalize_outputs", "action"))
+        for stat, value in (("mean", 0.0), ("std", 0.5))
+    }
     path = checkpoint / "legacy_normalization.safetensors"
     save_file(state, path)
     (checkpoint / "model.safetensors.header.json").write_text("{}")
-    monkeypatch.setattr(module, "_verified_legacy_values", lambda root: (
-        path, state, {}, {"header_sha256_prefix": "0123456789ab"}))
+    monkeypatch.setattr(
+        module,
+        "_verified_legacy_values",
+        lambda root: (path, state, {}, {"header_sha256_prefix": "0123456789ab"}),
+    )
     graph = build_processor_graph(checkpoint)
     assert graph["summary"]["coverage_status"] == "UNKNOWN"
     assert any("input:observation.images.front" in error["reason"] for error in graph["summary"]["errors"])

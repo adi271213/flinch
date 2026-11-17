@@ -64,7 +64,9 @@ def test_clean_sample_has_no_observed_trace_failure(checkpoints: dict[str, Path]
     checkpoint = checkpoints["clean_act_modern"]
     findings = run_offline_trace(checkpoint, _observation_sample(checkpoint))
     assert findings
-    assert all(finding.status not in {DiagnosticStatus.FAIL, DiagnosticStatus.CONFLICT} for finding in findings)
+    assert all(
+        finding.status not in {DiagnosticStatus.FAIL, DiagnosticStatus.CONFLICT} for finding in findings
+    )
     assert not _find(findings, "SILENT_STEP_BYPASS", DiagnosticStatus.FAIL)
     assert not _find(findings, "EMPIRICAL_GAIN_EXPLOSION", DiagnosticStatus.FAIL)
     assert not _find(findings, "RUNTIME_NON_FINITE", DiagnosticStatus.FAIL)
@@ -130,9 +132,7 @@ def test_4415_silent_bypass_identifies_native_step_and_missing_stat_keys(
     assert finding.details["pipeline_role"] == "preprocessor"
     assert finding.details["step_index"] == 0
     assert finding.details["step_class"] == "NormalizerProcessorStep"
-    assert "observation.state" in {
-        finding.details.get("tensor_key"), finding.details.get("feature_key")
-    }
+    assert "observation.state" in {finding.details.get("tensor_key"), finding.details.get("feature_key")}
     assert {"observation.state.mean", "observation.state.std"} <= set(finding.details["expected_keys"])
     assert "observation.state" in finding.details["expected_feature_keys"]
     assert "wrong_dataset/observation.state.mean" in finding.details["actual_stat_keys"]
@@ -143,9 +143,10 @@ def test_4415_silent_bypass_identifies_native_step_and_missing_stat_keys(
     assert Path(finding.provenance.file_path).suffix == ".safetensors"
     assert finding.provenance.step_name == "NormalizerProcessorStep"
     assert finding.provenance.tensor_key == "observation.state"
-    assert finding.provenance.sha256_prefix == hashlib.sha256(
-        Path(finding.provenance.file_path).read_bytes()
-    ).hexdigest()[:12]
+    assert (
+        finding.provenance.sha256_prefix
+        == hashlib.sha256(Path(finding.provenance.file_path).read_bytes()).hexdigest()[:12]
+    )
 
 
 def test_matching_stats_with_silent_native_step_are_still_detected(
@@ -182,8 +183,7 @@ def test_matching_action_stats_with_silent_postprocessor_are_detected(
     bypasses = [
         finding
         for finding in _find(findings, "SILENT_STEP_BYPASS", DiagnosticStatus.FAIL)
-        if finding.details["pipeline_role"] == "postprocessor"
-        and finding.details["feature_key"] == "action"
+        if finding.details["pipeline_role"] == "postprocessor" and finding.details["feature_key"] == "action"
     ]
     assert bypasses
     assert bypasses[0].details["step_index"] == 0
@@ -203,9 +203,7 @@ def test_5289_trace_locates_empirical_gain_explosion_coordinate(
     assert finding.details["pipeline_role"] == "preprocessor"
     assert finding.details["step_index"] == 0
     assert finding.details["step_class"] == "NormalizerProcessorStep"
-    assert "observation.state" in {
-        finding.details.get("tensor_key"), finding.details.get("feature_key")
-    }
+    assert "observation.state" in {finding.details.get("tensor_key"), finding.details.get("feature_key")}
     assert finding.provenance.violating_indices == [9]
     assert [0, 9] in finding.details["tensor_coordinates"]
     assert np.allclose(_flat_numbers(finding.details["input_values"]), 0.20)
@@ -230,9 +228,7 @@ def test_4973_trace_reports_first_nonfinite_normalizer_output(
     assert finding.details["pipeline_role"] == "preprocessor"
     assert finding.details["step_index"] == 0
     assert finding.details["step_class"] == "NormalizerProcessorStep"
-    assert "observation.state" in {
-        finding.details.get("tensor_key"), finding.details.get("feature_key")
-    }
+    assert "observation.state" in {finding.details.get("tensor_key"), finding.details.get("feature_key")}
     assert finding.provenance.violating_indices == [4]
     assert [0, 4] in finding.details["tensor_coordinates"]
     assert np.isnan(_flat_numbers(finding.details["output_values"])).any()
@@ -299,7 +295,9 @@ def test_trace_accepts_native_default_processor_config_filenames(
 
     findings = run_offline_trace(checkpoint, _observation_sample(checkpoint))
     assert findings
-    assert all(finding.status not in {DiagnosticStatus.FAIL, DiagnosticStatus.CONFLICT} for finding in findings)
+    assert all(
+        finding.status not in {DiagnosticStatus.FAIL, DiagnosticStatus.CONFLICT} for finding in findings
+    )
 
 
 def test_5315_temporal_audit_exposes_wrong_current_frame_anchor(
@@ -432,9 +430,13 @@ def _add_vla_language_steps(checkpoint: Path) -> None:
         {"registry_name": "rename_observations_processor", "config": {"rename_map": {}}},
         {"registry_name": "to_batch_processor", "config": {}},
         {"registry_name": "smolvla_new_line_processor", "config": {}},
-        {"registry_name": "tokenizer_processor", "config": {
-            "tokenizer_name": "never-download-this-tokenizer", "max_length": 48,
-        }},
+        {
+            "registry_name": "tokenizer_processor",
+            "config": {
+                "tokenizer_name": "never-download-this-tokenizer",
+                "max_length": 48,
+            },
+        },
         {"registry_name": "device_processor", "config": {"device": "cpu"}},
         *config["steps"],
     ]
@@ -444,24 +446,34 @@ def _add_vla_language_steps(checkpoint: Path) -> None:
 def _deny_tokenizer_and_network(monkeypatch: pytest.MonkeyPatch) -> None:
     def forbidden(*args, **kwargs):
         pytest.fail("numeric trace constructed a tokenizer or opened a network socket")
+
     monkeypatch.setattr(TokenizerProcessorStep, "__post_init__", forbidden)
     monkeypatch.setattr(socket, "socket", forbidden)
     monkeypatch.setattr(socket, "create_connection", forbidden)
 
 
 def test_vla_trace_stubs_only_language_and_executes_native_numeric_steps_read_only(
-    checkpoints: dict[str, Path], monkeypatch: pytest.MonkeyPatch,
+    checkpoints: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import lerobot_preflight.trace as trace_module
+
     checkpoint = checkpoints["clean_act_modern"]
     _add_vla_language_steps(checkpoint)
-    before = {str(path.relative_to(checkpoint)): path.read_bytes()
-              for path in checkpoint.rglob("*") if path.is_file()}
+    before = {
+        str(path.relative_to(checkpoint)): path.read_bytes()
+        for path in checkpoint.rglob("*")
+        if path.is_file()
+    }
     _deny_tokenizer_and_network(monkeypatch)
     pre, _ = trace_module._load_processor_pair(checkpoint, numeric_only=True)
     assert [type(step).__name__ for step in pre[0].steps] == [
-        "RenameObservationsProcessorStep", "AddBatchDimensionProcessorStep", "NewLineTaskProcessorStep",
-        "IdentityProcessorStep", "DeviceProcessorStep", "NormalizerProcessorStep",
+        "RenameObservationsProcessorStep",
+        "AddBatchDimensionProcessorStep",
+        "NewLineTaskProcessorStep",
+        "IdentityProcessorStep",
+        "DeviceProcessorStep",
+        "NormalizerProcessorStep",
     ]
     batch = {"observation.state": torch.full((14,), 0.20), "task": "Pick the cube"}
     output = pre[0](batch)
@@ -483,18 +495,27 @@ def test_vla_trace_stubs_only_language_and_executes_native_numeric_steps_read_on
     assert not _find(findings, "OFFLINE_TRACE")
     for check in ("SILENT_STEP_BYPASS", "EMPIRICAL_GAIN_EXPLOSION", "RUNTIME_NON_FINITE"):
         assert _find(findings, check, DiagnosticStatus.PASS)
-    assert before == {str(path.relative_to(checkpoint)): path.read_bytes()
-                      for path in checkpoint.rglob("*") if path.is_file()}
+    assert before == {
+        str(path.relative_to(checkpoint)): path.read_bytes()
+        for path in checkpoint.rglob("*")
+        if path.is_file()
+    }
 
 
-@pytest.mark.parametrize("fixture,check,coordinate", [
-    ("bug_4415_silent_bypass", "SILENT_STEP_BYPASS", 0),
-    ("bug_5289_pathological_gain", "EMPIRICAL_GAIN_EXPLOSION", 9),
-    ("bug_4973_fp16_nan", "RUNTIME_NON_FINITE", 4),
-])
+@pytest.mark.parametrize(
+    "fixture,check,coordinate",
+    [
+        ("bug_4415_silent_bypass", "SILENT_STEP_BYPASS", 0),
+        ("bug_5289_pathological_gain", "EMPIRICAL_GAIN_EXPLOSION", 9),
+        ("bug_4973_fp16_nan", "RUNTIME_NON_FINITE", 4),
+    ],
+)
 def test_vla_language_stub_preserves_bug_detection_and_original_step_indices(
-    checkpoints: dict[str, Path], monkeypatch: pytest.MonkeyPatch,
-    fixture: str, check: str, coordinate: int,
+    checkpoints: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    fixture: str,
+    check: str,
+    coordinate: int,
 ) -> None:
     checkpoint = checkpoints[fixture]
     _add_vla_language_steps(checkpoint)
@@ -509,7 +530,8 @@ def test_vla_language_stub_preserves_bug_detection_and_original_step_indices(
 
 
 def test_vla_language_stub_does_not_whitelist_unknown_numeric_steps(
-    checkpoints: dict[str, Path], monkeypatch: pytest.MonkeyPatch,
+    checkpoints: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     checkpoint = checkpoints["clean_act_modern"]
     _add_vla_language_steps(checkpoint)
@@ -524,42 +546,63 @@ def test_vla_language_stub_does_not_whitelist_unknown_numeric_steps(
 
 
 def test_large_raw_levels_are_not_gain_explosions_at_structural_vla_steps(
-    checkpoints: dict[str, Path], monkeypatch: pytest.MonkeyPatch,
+    checkpoints: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     checkpoint = checkpoints["clean_act_modern"]
-    features = {"observation.state": PolicyFeature(FeatureType.STATE, (14,)),
-                "action": PolicyFeature(FeatureType.ACTION, (14,))}
+    features = {
+        "observation.state": PolicyFeature(FeatureType.STATE, (14,)),
+        "action": PolicyFeature(FeatureType.ACTION, (14,)),
+    }
     stats = {key: {"mean": torch.full((14,), 100.0), "std": torch.full((14,), 10.0)} for key in features}
     mapping = {FeatureType.STATE: NormalizationMode.MEAN_STD, FeatureType.ACTION: NormalizationMode.MEAN_STD}
-    PolicyProcessorPipeline(name="policy_preprocessor", steps=[
-        NormalizerProcessorStep(features=features, norm_map=mapping, stats=stats),
-    ]).save_pretrained(checkpoint, config_filename="preprocessor_config.json")
-    PolicyProcessorPipeline(name="policy_postprocessor", steps=[
-        UnnormalizerProcessorStep(features={"action": features["action"]},
-                                  norm_map=mapping, stats={"action": stats["action"]}),
-    ]).save_pretrained(checkpoint, config_filename="postprocessor_config.json")
+    PolicyProcessorPipeline(
+        name="policy_preprocessor",
+        steps=[
+            NormalizerProcessorStep(features=features, norm_map=mapping, stats=stats),
+        ],
+    ).save_pretrained(checkpoint, config_filename="preprocessor_config.json")
+    PolicyProcessorPipeline(
+        name="policy_postprocessor",
+        steps=[
+            UnnormalizerProcessorStep(
+                features={"action": features["action"]}, norm_map=mapping, stats={"action": stats["action"]}
+            ),
+        ],
+    ).save_pretrained(checkpoint, config_filename="postprocessor_config.json")
     _add_vla_language_steps(checkpoint)
-    np.savez(_observation_sample(checkpoint), **{
-        "observation.state": np.full((14,), 110.0, dtype=np.float32),
-        "observation.language.tokens": np.array([[99999]], dtype=np.int64),
-    })
+    np.savez(
+        _observation_sample(checkpoint),
+        **{
+            "observation.state": np.full((14,), 110.0, dtype=np.float32),
+            "observation.language.tokens": np.array([[99999]], dtype=np.int64),
+        },
+    )
     np.savez(checkpoint / "sample_action.npz", action=np.full((14,), 110.0, dtype=np.float32))
     _deny_tokenizer_and_network(monkeypatch)
     findings = run_offline_trace(checkpoint, _observation_sample(checkpoint))
     failures = [finding for finding in findings if finding.status is DiagnosticStatus.FAIL]
     # Structural/raw preprocessor values remain exempt. The actual inverse
     # numeric step now has its own coverage and grows normalized action 1 to 110.
-    assert failures and all(finding.check_id == "EMPIRICAL_GAIN_EXPLOSION"
-                            and finding.details["pipeline_role"] == "postprocessor"
-                            and finding.details["step_index"] == 0 for finding in failures)
-    assert not any(finding.check_id == "EMPIRICAL_GAIN_EXPLOSION"
-                   and finding.details.get("pipeline_role") == "preprocessor" for finding in findings)
+    assert failures and all(
+        finding.check_id == "EMPIRICAL_GAIN_EXPLOSION"
+        and finding.details["pipeline_role"] == "postprocessor"
+        and finding.details["step_index"] == 0
+        for finding in failures
+    )
+    assert not any(
+        finding.check_id == "EMPIRICAL_GAIN_EXPLOSION"
+        and finding.details.get("pipeline_role") == "preprocessor"
+        for finding in findings
+    )
 
 
 def test_strict_shared_loader_does_not_silently_stub_language_for_temporal_audits(
-    checkpoints: dict[str, Path], monkeypatch: pytest.MonkeyPatch,
+    checkpoints: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import lerobot_preflight.trace as trace_module
+
     checkpoint = checkpoints["clean_act_modern"]
     _add_vla_language_steps(checkpoint)
     _deny_tokenizer_and_network(monkeypatch)
@@ -570,7 +613,9 @@ def test_strict_shared_loader_does_not_silently_stub_language_for_temporal_audit
 
 @pytest.mark.parametrize("consumer", ["active_normalizer", "rename", "uninspected"])
 def test_stubbed_token_outputs_never_reach_declared_downstream_consumers(
-    checkpoints: dict[str, Path], monkeypatch: pytest.MonkeyPatch, consumer: str,
+    checkpoints: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    consumer: str,
 ) -> None:
     checkpoint = checkpoints["clean_act_modern"]
     _add_vla_language_steps(checkpoint)
@@ -578,15 +623,21 @@ def test_stubbed_token_outputs_never_reach_declared_downstream_consumers(
     config = json.loads(path.read_text())
     token_key = "observation.language.tokens"
     if consumer == "active_normalizer":
-        step = {"registry_name": "normalizer_processor", "config": {
-            "features": {token_key: {"type": "LANGUAGE", "shape": [48]}},
-            "norm_map": {"LANGUAGE": "MEAN_STD"},
-            "stats": {token_key: {"mean": [0.0], "std": [1.0]}},
-        }}
+        step = {
+            "registry_name": "normalizer_processor",
+            "config": {
+                "features": {token_key: {"type": "LANGUAGE", "shape": [48]}},
+                "norm_map": {"LANGUAGE": "MEAN_STD"},
+                "stats": {token_key: {"mean": [0.0], "std": [1.0]}},
+            },
+        }
     elif consumer == "rename":
-        step = {"registry_name": "rename_observations_processor", "config": {
-            "rename_map": {token_key: "observation.required_tokens"},
-        }}
+        step = {
+            "registry_name": "rename_observations_processor",
+            "config": {
+                "rename_map": {token_key: "observation.required_tokens"},
+            },
+        }
     else:
         step = {"registry_name": "uninspected_token_consumer", "config": {"input_key": token_key}}
     config["steps"].insert(4, step)
@@ -595,6 +646,7 @@ def test_stubbed_token_outputs_never_reach_declared_downstream_consumers(
 
     def forbidden(*args, **kwargs):
         pytest.fail("a token-dependent pipeline was constructed")
+
     monkeypatch.setattr(DataProcessorPipeline, "from_config", forbidden)
     monkeypatch.setattr(DataProcessorPipeline, "from_pretrained", forbidden)
     findings = run_offline_trace(checkpoint, _observation_sample(checkpoint))
@@ -607,7 +659,8 @@ def test_stubbed_token_outputs_never_reach_declared_downstream_consumers(
 
 
 def test_vla_tokenizer_accepts_contained_saved_artifact_directory(
-    checkpoints: dict[str, Path], monkeypatch: pytest.MonkeyPatch,
+    checkpoints: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     checkpoint = checkpoints["clean_act_modern"]
     _add_vla_language_steps(checkpoint)
@@ -625,19 +678,27 @@ def test_vla_tokenizer_accepts_contained_saved_artifact_directory(
     assert _find(findings, "RUNTIME_NON_FINITE", DiagnosticStatus.PASS)
 
 
-@pytest.mark.parametrize("location,value", [("observation", np.nan), ("observation", np.inf),
-                                             ("action", -np.inf)])
+@pytest.mark.parametrize(
+    "location,value", [("observation", np.nan), ("observation", np.inf), ("action", -np.inf)]
+)
 def test_invalid_sample_nonfinite_is_attributed_before_first_processor_step(
-    checkpoints: dict[str, Path], monkeypatch: pytest.MonkeyPatch, location: str, value: float,
+    checkpoints: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    location: str,
+    value: float,
 ) -> None:
     checkpoint = checkpoints["clean_act_modern"]
-    sample = _observation_sample(checkpoint) if location == "observation" else checkpoint / "sample_action.npz"
+    sample = (
+        _observation_sample(checkpoint) if location == "observation" else checkpoint / "sample_action.npz"
+    )
     key = "observation.state" if location == "observation" else "action"
     tensor = np.full((1, 14), 0.20, dtype=np.float32)
     tensor[0, 7] = value
     np.savez(sample, **{key: tensor})
+
     def forbidden(*args, **kwargs):
         pytest.fail("invalid input was executed by a native processor")
+
     monkeypatch.setattr(NormalizerProcessorStep, "__call__", forbidden)
     findings = run_offline_trace(checkpoint, _observation_sample(checkpoint))
     invalid = _find(findings, "INVALID_SAMPLE_INPUT", DiagnosticStatus.FAIL)
@@ -653,23 +714,34 @@ def test_invalid_sample_nonfinite_is_attributed_before_first_processor_step(
     json.dumps(invalid[0].to_dict(), allow_nan=False)
 
 
-@pytest.mark.parametrize("raw,mean,std,expected_failure", [
-    (1000.0, 0.0, 10.0, False),  # 100 is large, but attenuated tenfold.
-    (100.0, 0.0, 1.0, False),    # Already large input; no step amplification.
-    (10.0, 0.0, 0.1, True),     # Both output > 50 and > 2x actual input.
-])
+@pytest.mark.parametrize(
+    "raw,mean,std,expected_failure",
+    [
+        (1000.0, 0.0, 10.0, False),  # 100 is large, but attenuated tenfold.
+        (100.0, 0.0, 1.0, False),  # Already large input; no step amplification.
+        (10.0, 0.0, 0.1, True),  # Both output > 50 and > 2x actual input.
+    ],
+)
 def test_empirical_gain_requires_absolute_magnitude_and_actual_step_amplification(
-    checkpoints: dict[str, Path], raw: float, mean: float, std: float, expected_failure: bool,
+    checkpoints: dict[str, Path],
+    raw: float,
+    mean: float,
+    std: float,
+    expected_failure: bool,
 ) -> None:
     checkpoint = checkpoints["clean_act_modern"]
     pre = PolicyProcessorPipeline.from_pretrained(
-        checkpoint, config_filename="preprocessor_config.json", local_files_only=True,
+        checkpoint,
+        config_filename="preprocessor_config.json",
+        local_files_only=True,
     )
     normalizer = pre.steps[0]
     normalizer.stats = {"observation.state": {"mean": [mean] * 14, "std": [std] * 14}}
     normalizer.to(dtype=torch.float32)
     pre.save_pretrained(checkpoint, config_filename="preprocessor_config.json")
-    np.savez(_observation_sample(checkpoint), **{"observation.state": np.full((1, 14), raw, dtype=np.float32)})
+    np.savez(
+        _observation_sample(checkpoint), **{"observation.state": np.full((1, 14), raw, dtype=np.float32)}
+    )
     findings = run_offline_trace(checkpoint, _observation_sample(checkpoint))
     failures = _find(findings, "EMPIRICAL_GAIN_EXPLOSION", DiagnosticStatus.FAIL)
     assert bool(failures) is expected_failure
@@ -725,7 +797,7 @@ def test_single_frame_relative_action_mask_rejects_narrow_state(checkpoints: dic
     config["input_features"]["observation.state"]["shape"] = [3]
     config["output_features"]["action"]["shape"] = [4]
     path.write_text(json.dumps(config))
-    finding, = _audit_temporal(checkpoint)
+    (finding,) = _audit_temporal(checkpoint)
     assert finding.status is DiagnosticStatus.FAIL
     assert finding.details["n_obs_steps"] == 1
     assert finding.details["declared_state_dim"] == 3
@@ -738,9 +810,15 @@ def test_single_frame_relative_action_mask_rejects_narrow_state(checkpoints: dic
 @pytest.mark.parametrize("fault", ["nonzero_error", "exception", "wrong_shape", "nan"])
 def test_temporal_roundtrip_failure_never_passes(checkpoints, monkeypatch, fault) -> None:
     checkpoint = checkpoints["bug_5315_temporal_anchor"]
-    (checkpoint / "metadata.json").write_text(json.dumps({
-        "n_obs_steps": 3, "observation_order": "newest_first", "current_index": 0,
-    }))
+    (checkpoint / "metadata.json").write_text(
+        json.dumps(
+            {
+                "n_obs_steps": 3,
+                "observation_order": "newest_first",
+                "current_index": 0,
+            }
+        )
+    )
     native_inverse = AbsoluteActionsProcessorStep.__call__
 
     def damaged_inverse(self, transition):
@@ -755,7 +833,7 @@ def test_temporal_roundtrip_failure_never_passes(checkpoints, monkeypatch, fault
         return {**result, "action": action}
 
     monkeypatch.setattr(AbsoluteActionsProcessorStep, "__call__", damaged_inverse)
-    finding, = _audit_temporal(checkpoint)
+    (finding,) = _audit_temporal(checkpoint)
     assert finding.status is DiagnosticStatus.FAIL
     assert finding.details["native_roundtrip_passed"] is False
     assert finding.details["roundtrip_error_tolerance"] == {"atol": 1e-5, "rtol": 1e-5}
@@ -772,13 +850,13 @@ def test_temporal_forward_probe_exception_is_failure(checkpoints, monkeypatch) -
         raise RuntimeError("forward deliberately failed")
 
     monkeypatch.setattr(RelativeActionsProcessorStep, "__call__", damaged_forward)
-    finding, = _audit_temporal(checkpoint)
+    (finding,) = _audit_temporal(checkpoint)
     assert finding.status is DiagnosticStatus.FAIL
     assert finding.details["pipeline_error"] == "forward deliberately failed"
 
 
 def test_counterexample_a_cli_import_uses_native_rename_when_helper_is_absent(tmp_path):
-    script = '''
+    script = """
 import socket
 import lerobot.processor.rename_processor as renames
 from lerobot.processor import RenameObservationsProcessorStep
@@ -798,32 +876,51 @@ assert rename_keys({"raw": marker}, {"raw": "observation.state"}) == {"observati
 assert rename_keys({"raw_is_pad": marker}, {"raw": "observation.state"}) == {"observation.state_is_pad": marker}
 assert callable(main)
 print("CLI import and native rename fallback passed")
-'''
-    completed = subprocess.run([sys.executable, "-c", script], cwd=tmp_path,
-                               env=source_subprocess_env(), text=True, capture_output=True, check=False)
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=tmp_path,
+        env=source_subprocess_env(),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
     assert completed.returncode == 0, completed.stderr
     assert "native rename fallback passed" in completed.stdout
 
 
 def test_counterexample_c_real_float32_one_ulp_roundtrip_passes(checkpoints):
     checkpoint = checkpoints["bug_5315_temporal_anchor"]
-    (checkpoint / "metadata.json").write_text(json.dumps({
-        "n_obs_steps": 3, "observation_order": "newest_first", "current_index": 0,
-    }))
+    (checkpoint / "metadata.json").write_text(
+        json.dumps(
+            {
+                "n_obs_steps": 3,
+                "observation_order": "newest_first",
+                "current_index": 0,
+            }
+        )
+    )
     features = {"action": PolicyFeature(FeatureType.ACTION, (14,))}
     norm_map = {FeatureType.ACTION: NormalizationMode.MEAN_STD}
     stats = {"action": {"mean": [-0.411523] * 14, "std": [0.168827] * 14}}
     relative = RelativeActionsProcessorStep(enabled=True)
-    pre = PolicyProcessorPipeline(name="policy_preprocessor", steps=[
-        NormalizerProcessorStep(features=features, norm_map=norm_map, stats=stats), relative,
-    ])
-    post = PolicyProcessorPipeline(name="policy_postprocessor", steps=[
-        AbsoluteActionsProcessorStep(enabled=True, relative_step=relative),
-        UnnormalizerProcessorStep(features=features, norm_map=norm_map, stats=stats),
-    ])
+    pre = PolicyProcessorPipeline(
+        name="policy_preprocessor",
+        steps=[
+            NormalizerProcessorStep(features=features, norm_map=norm_map, stats=stats),
+            relative,
+        ],
+    )
+    post = PolicyProcessorPipeline(
+        name="policy_postprocessor",
+        steps=[
+            AbsoluteActionsProcessorStep(enabled=True, relative_step=relative),
+            UnnormalizerProcessorStep(features=features, norm_map=norm_map, stats=stats),
+        ],
+    )
     pre.save_pretrained(checkpoint, config_filename="preprocessor_config.json")
     post.save_pretrained(checkpoint, config_filename="postprocessor_config.json")
-    finding, = _audit_temporal(checkpoint)
+    (finding,) = _audit_temporal(checkpoint)
     assert finding.status is DiagnosticStatus.PASS
     assert finding.details["native_roundtrip_passed"] is True
     assert finding.details["native_roundtrip_max_abs_error"] == pytest.approx(1.1920928955078125e-7)
@@ -840,13 +937,20 @@ def _large_offset_temporal_checkpoint(checkpoints, *, count=1):
     norm_map = {FeatureType.ACTION: NormalizationMode.MEAN_STD}
     stats = {"action": {"mean": [2048.0] * 14, "std": [0.168827] * 14}}
     relative = RelativeActionsProcessorStep(enabled=True)
-    pre = PolicyProcessorPipeline(name="policy_preprocessor", steps=[
-        NormalizerProcessorStep(features=features, norm_map=norm_map, stats=stats), relative,
-    ])
-    post = PolicyProcessorPipeline(name="policy_postprocessor", steps=[
-        AbsoluteActionsProcessorStep(enabled=True, relative_step=relative),
-        UnnormalizerProcessorStep(features=features, norm_map=norm_map, stats=stats),
-    ])
+    pre = PolicyProcessorPipeline(
+        name="policy_preprocessor",
+        steps=[
+            NormalizerProcessorStep(features=features, norm_map=norm_map, stats=stats),
+            relative,
+        ],
+    )
+    post = PolicyProcessorPipeline(
+        name="policy_postprocessor",
+        steps=[
+            AbsoluteActionsProcessorStep(enabled=True, relative_step=relative),
+            UnnormalizerProcessorStep(features=features, norm_map=norm_map, stats=stats),
+        ],
+    )
     pre.save_pretrained(checkpoint, config_filename="preprocessor_config.json")
     post.save_pretrained(checkpoint, config_filename="postprocessor_config.json")
     return checkpoint
@@ -854,18 +958,22 @@ def _large_offset_temporal_checkpoint(checkpoints, *, count=1):
 
 def test_large_action_offset_roundtrip_uses_native_intermediate_precision_scale(checkpoints):
     checkpoint = _large_offset_temporal_checkpoint(checkpoints)
-    finding, = _audit_temporal(checkpoint)
+    (finding,) = _audit_temporal(checkpoint)
     assert finding.status is DiagnosticStatus.PASS
     assert finding.details["native_roundtrip_passed"] is True
-    assert finding.details["native_roundtrip_max_abs_error"] > 1e-5 + .9e-5
+    assert finding.details["native_roundtrip_max_abs_error"] > 1e-5 + 0.9e-5
     budget = finding.details["roundtrip_precision_budget"]
     assert budget["max_intermediate_scale"] > 2048
     assert budget["machine_epsilon"] == torch.finfo(torch.float32).eps
     assert finding.details["roundtrip_error_tolerance"]["atol"] == pytest.approx(budget["roundoff_atol"])
-    assert any(source["pipeline_role"] == "postprocessor" and source["source"] == "step_output"
-               for source in budget["sources"])
-    assert any(source["tensor_key"] == "action.mean" and source["max_absolute_value"] == 2048
-               for source in budget["sources"])
+    assert any(
+        source["pipeline_role"] == "postprocessor" and source["source"] == "step_output"
+        for source in budget["sources"]
+    )
+    assert any(
+        source["tensor_key"] == "action.mean" and source["max_absolute_value"] == 2048
+        for source in budget["sources"]
+    )
     assert finding.details["actual_anchor_index"] == 0
 
 
@@ -878,15 +986,18 @@ def test_scale_aware_tolerance_does_not_hide_a_genuine_large_offset_inverse_erro
         return {**result, "action": result["action"] + 0.1}
 
     monkeypatch.setattr(UnnormalizerProcessorStep, "__call__", bad_inverse)
-    finding, = _audit_temporal(checkpoint)
+    (finding,) = _audit_temporal(checkpoint)
     assert finding.status is DiagnosticStatus.FAIL
     assert finding.details["native_roundtrip_passed"] is False
-    assert finding.details["native_roundtrip_max_abs_error"] > finding.details["roundtrip_error_tolerance"]["atol"]
+    assert (
+        finding.details["native_roundtrip_max_abs_error"]
+        > finding.details["roundtrip_error_tolerance"]["atol"]
+    )
 
 
 def test_scale_aware_tolerance_preserves_wrong_history_anchor_detection(checkpoints):
     checkpoint = _large_offset_temporal_checkpoint(checkpoints, count=3)
-    finding, = _audit_temporal(checkpoint)
+    (finding,) = _audit_temporal(checkpoint)
     assert finding.status is DiagnosticStatus.FAIL
     assert finding.details["native_roundtrip_passed"] is True
     assert finding.details["actual_anchor_index"] == 0
@@ -926,7 +1037,9 @@ def test_counterexample_g_postprocessor_bypass_is_observed(checkpoints):
     config = json.loads((checkpoint / "postprocessor_config.json").read_text())
     state_path = checkpoint / config["steps"][0]["state_file"]
     state = load_file(state_path)
-    save_file({key.replace("action.", "wrong_dataset.action."): value for key, value in state.items()}, state_path)
+    save_file(
+        {key.replace("action.", "wrong_dataset.action."): value for key, value in state.items()}, state_path
+    )
     findings = run_offline_trace(checkpoint, _observation_sample(checkpoint))
     failures = _find(findings, "SILENT_STEP_BYPASS", DiagnosticStatus.FAIL)
     assert len(failures) == 1
@@ -939,10 +1052,16 @@ def test_test_only_fixture_sidecar_is_never_read_as_production_chronology(checkp
     checkpoint = checkpoints["bug_5315_temporal_anchor"]
     (checkpoint / "metadata.json").unlink()
     # A test-only file cannot manufacture certainty about the current frame.
-    (checkpoint / ("fixture_" + "metadata.json")).write_text(json.dumps({
-        "n_obs_steps": 3, "observation_order": "newest_first", "current_index": 0,
-    }))
-    finding, = _audit_temporal(checkpoint)
+    (checkpoint / ("fixture_" + "metadata.json")).write_text(
+        json.dumps(
+            {
+                "n_obs_steps": 3,
+                "observation_order": "newest_first",
+                "current_index": 0,
+            }
+        )
+    )
+    (finding,) = _audit_temporal(checkpoint)
     assert finding.status is DiagnosticStatus.UNKNOWN
     assert "n_obs_steps" in finding.details["missing_declarations"]
 
@@ -950,10 +1069,10 @@ def test_test_only_fixture_sidecar_is_never_read_as_production_chronology(checkp
 def test_chronology_sidecars_are_explicit_opt_in(checkpoints):
     checkpoint = checkpoints["bug_5315_temporal_anchor"]
     # A plausible generic sidecar is ignored until supplied by API/CLI caller.
-    implicit, = run_temporal_audit(checkpoint)
+    (implicit,) = run_temporal_audit(checkpoint)
     assert implicit.status is DiagnosticStatus.UNKNOWN
     assert "n_obs_steps" in implicit.details["missing_declarations"]
-    explicit, = run_temporal_audit(checkpoint, metadata_path=checkpoint / "metadata.json")
+    (explicit,) = run_temporal_audit(checkpoint, metadata_path=checkpoint / "metadata.json")
     assert explicit.status is DiagnosticStatus.FAIL
     assert explicit.details["actual_anchor_index"] == 0
     assert explicit.details["expected_anchor_index"] == 2
@@ -961,7 +1080,10 @@ def test_chronology_sidecars_are_explicit_opt_in(checkpoints):
 
 @pytest.mark.parametrize("extra_observation", [False, True])
 def test_missing_active_state_sample_cannot_borrow_action_coverage(
-    checkpoints, tmp_path, monkeypatch, extra_observation,
+    checkpoints,
+    tmp_path,
+    monkeypatch,
+    extra_observation,
 ) -> None:
     import lerobot_preflight.trace as trace_module
 
@@ -971,9 +1093,11 @@ def test_missing_active_state_sample_cannot_borrow_action_coverage(
         sample["observation.unrelated"] = np.ones((1, 14), dtype=np.float32)
     path = tmp_path / "missing_state.npz"
     np.savez(path, **sample)
-    monkeypatch.setattr(trace_module, "_trace_pipeline", lambda *args, **kwargs: pytest.fail("step 0 executed"))
+    monkeypatch.setattr(
+        trace_module, "_trace_pipeline", lambda *args, **kwargs: pytest.fail("step 0 executed")
+    )
     findings = run_offline_trace(checkpoint, path)
-    finding, = _find(findings, "MISSING_REQUIRED_SAMPLE_FEATURE", DiagnosticStatus.FAIL)
+    (finding,) = _find(findings, "MISSING_REQUIRED_SAMPLE_FEATURE", DiagnosticStatus.FAIL)
     assert finding.details["feature_key"] == "observation.state"
     assert finding.details["step_index"] == 0
     assert finding.details["required_coverage"] is True
@@ -988,12 +1112,16 @@ def test_missing_policy_state_required_even_when_normalizer_is_identity(checkpoi
     config = json.loads(path.read_text())
     config["steps"][0]["config"]["norm_map"]["STATE"] = "IDENTITY"
     path.write_text(json.dumps(config))
-    (checkpoint / "config.json").write_text(json.dumps({
-        "input_features": {"observation.state": {"type": "STATE", "shape": [14]}},
-    }))
+    (checkpoint / "config.json").write_text(
+        json.dumps(
+            {
+                "input_features": {"observation.state": {"type": "STATE", "shape": [14]}},
+            }
+        )
+    )
     sample = tmp_path / "action_only.npz"
     np.savez(sample, action=np.zeros((1, 14), dtype=np.float32))
-    finding, = run_offline_trace(checkpoint, sample)
+    (finding,) = run_offline_trace(checkpoint, sample)
     assert finding.check_id == "MISSING_REQUIRED_SAMPLE_FEATURE"
     assert finding.status is DiagnosticStatus.FAIL
     assert finding.details["feature_key"] == "observation.state"
@@ -1001,7 +1129,9 @@ def test_missing_policy_state_required_even_when_normalizer_is_identity(checkpoi
 
 @pytest.mark.parametrize("missing_environment", [False, True])
 def test_active_environment_sample_coverage_follows_native_rename(
-    checkpoints, tmp_path, missing_environment,
+    checkpoints,
+    tmp_path,
+    missing_environment,
 ) -> None:
     checkpoint = checkpoints["clean_act_modern"]
     features = {
@@ -1009,32 +1139,53 @@ def test_active_environment_sample_coverage_follows_native_rename(
         "observation.environment_state": PolicyFeature(type=FeatureType.ENV, shape=(2,)),
         "action": PolicyFeature(type=FeatureType.ACTION, shape=(14,)),
     }
-    stats = {key: {"mean": torch.zeros(feature.shape), "std": torch.ones(feature.shape) * 0.5}
-             for key, feature in features.items()}
-    pipeline = PolicyProcessorPipeline(name="policy_preprocessor", steps=[
-        RenameObservationsProcessorStep(rename_map={
-            "observation.raw_state": "observation.state",
-            "observation.raw_environment": "observation.environment_state",
-        }),
-        NormalizerProcessorStep(features=features, norm_map={
-            FeatureType.STATE: NormalizationMode.MEAN_STD, FeatureType.ENV: NormalizationMode.MEAN_STD,
-            FeatureType.ACTION: NormalizationMode.MEAN_STD,
-        }, stats=stats),
-    ])
+    stats = {
+        key: {"mean": torch.zeros(feature.shape), "std": torch.ones(feature.shape) * 0.5}
+        for key, feature in features.items()
+    }
+    pipeline = PolicyProcessorPipeline(
+        name="policy_preprocessor",
+        steps=[
+            RenameObservationsProcessorStep(
+                rename_map={
+                    "observation.raw_state": "observation.state",
+                    "observation.raw_environment": "observation.environment_state",
+                }
+            ),
+            NormalizerProcessorStep(
+                features=features,
+                norm_map={
+                    FeatureType.STATE: NormalizationMode.MEAN_STD,
+                    FeatureType.ENV: NormalizationMode.MEAN_STD,
+                    FeatureType.ACTION: NormalizationMode.MEAN_STD,
+                },
+                stats=stats,
+            ),
+        ],
+    )
     pipeline.save_pretrained(checkpoint, config_filename="preprocessor_config.json")
-    (checkpoint / "config.json").write_text(json.dumps({"input_features": {
-        key: {"type": feature.type.value, "shape": list(feature.shape)}
-        for key, feature in features.items() if feature.type != FeatureType.ACTION
-    }}))
-    sample = {"observation.raw_state": np.ones((1, 14), dtype=np.float32) * 0.2,
-              "action": np.ones((1, 14), dtype=np.float32) * 0.4}
+    (checkpoint / "config.json").write_text(
+        json.dumps(
+            {
+                "input_features": {
+                    key: {"type": feature.type.value, "shape": list(feature.shape)}
+                    for key, feature in features.items()
+                    if feature.type != FeatureType.ACTION
+                }
+            }
+        )
+    )
+    sample = {
+        "observation.raw_state": np.ones((1, 14), dtype=np.float32) * 0.2,
+        "action": np.ones((1, 14), dtype=np.float32) * 0.4,
+    }
     if not missing_environment:
         sample["observation.raw_environment"] = np.ones((1, 2), dtype=np.float32) * 0.2
     path = tmp_path / "renamed_environment.npz"
     np.savez(path, **sample)
     findings = run_offline_trace(checkpoint, path)
     if missing_environment:
-        finding, = _find(findings, "MISSING_REQUIRED_SAMPLE_FEATURE", DiagnosticStatus.FAIL)
+        (finding,) = _find(findings, "MISSING_REQUIRED_SAMPLE_FEATURE", DiagnosticStatus.FAIL)
         assert finding.details["feature_key"] == "observation.environment_state"
         assert finding.details["step_index"] == 1
         assert not _find(findings, "SILENT_STEP_BYPASS", DiagnosticStatus.PASS)
@@ -1060,7 +1211,7 @@ def test_undeclared_action_width_never_invents_one_coordinate(checkpoints, n_obs
         pytest.fail("A synthetic action width was invented before compatibility was established")
 
     monkeypatch.setattr(RelativeActionsProcessorStep, "_build_mask", forbidden_probe)
-    finding, = _audit_temporal(checkpoint)
+    (finding,) = _audit_temporal(checkpoint)
     assert finding.status is DiagnosticStatus.UNKNOWN
     assert "Undeclared action dimension prevents temporal compatibility verification" in finding.summary
     assert finding.details["declared_action_dim"] is None
@@ -1079,7 +1230,7 @@ def test_explicit_action_names_can_supply_temporal_action_width(checkpoints):
     config = json.loads(path.read_text())
     config["steps"][0]["config"]["action_names"] = [f"joint_{index}" for index in range(14)]
     path.write_text(json.dumps(config))
-    finding, = _audit_temporal(checkpoint)
+    (finding,) = _audit_temporal(checkpoint)
     assert finding.status is DiagnosticStatus.PASS
     assert finding.details["declared_action_dim"] == 14
     assert finding.details["dimension_compatibility_verified"] is True
@@ -1087,16 +1238,26 @@ def test_explicit_action_names_can_supply_temporal_action_width(checkpoints):
 
 @pytest.mark.parametrize("shape", [(1, 1), (1,), (), (2, 13), (14, 1)])
 def test_sample_shape_cannot_broadcast_a_narrow_state_across_declared_features(
-    checkpoints, tmp_path, monkeypatch, shape,
+    checkpoints,
+    tmp_path,
+    monkeypatch,
+    shape,
 ):
     import lerobot_preflight.trace as trace_module
 
     checkpoint = checkpoints["clean_act_modern"]
     path = tmp_path / "bad_shape.npz"
-    np.savez(path, **{"observation.state": np.full(shape, 0.2, dtype=np.float32),
-                     "action": np.full((1, 14), 0.4, dtype=np.float32)})
-    monkeypatch.setattr(trace_module, "_trace_pipeline", lambda *args, **kwargs: pytest.fail("step 0 executed"))
-    finding, = run_offline_trace(checkpoint, path)
+    np.savez(
+        path,
+        **{
+            "observation.state": np.full(shape, 0.2, dtype=np.float32),
+            "action": np.full((1, 14), 0.4, dtype=np.float32),
+        },
+    )
+    monkeypatch.setattr(
+        trace_module, "_trace_pipeline", lambda *args, **kwargs: pytest.fail("step 0 executed")
+    )
+    (finding,) = run_offline_trace(checkpoint, path)
     assert finding.check_id == "INVALID_SAMPLE_SHAPE"
     assert finding.status is DiagnosticStatus.FAIL
     assert finding.details["expected_feature_shape"] == [14]
@@ -1113,19 +1274,26 @@ def test_sample_shape_cannot_broadcast_a_narrow_state_across_declared_features(
 def test_sample_shape_accepts_exact_features_with_optional_batch_and_time(checkpoints, tmp_path, shape):
     checkpoint = checkpoints["clean_act_modern"]
     path = tmp_path / "valid_shape.npz"
-    np.savez(path, **{"observation.state": np.full(shape, 0.2, dtype=np.float32),
-                     "action": np.full(shape, 0.4, dtype=np.float32)})
+    np.savez(
+        path,
+        **{
+            "observation.state": np.full(shape, 0.2, dtype=np.float32),
+            "action": np.full(shape, 0.4, dtype=np.float32),
+        },
+    )
     findings = run_offline_trace(checkpoint, path)
     assert not _find(findings, "INVALID_SAMPLE_SHAPE")
     assert _find(findings, "SILENT_STEP_BYPASS", DiagnosticStatus.PASS)
-    assert not any(finding.status in {DiagnosticStatus.FAIL, DiagnosticStatus.CONFLICT} for finding in findings)
+    assert not any(
+        finding.status in {DiagnosticStatus.FAIL, DiagnosticStatus.CONFLICT} for finding in findings
+    )
 
 
 def test_action_shape_failure_points_to_adjacent_action_npz(checkpoints):
     checkpoint = checkpoints["clean_act_modern"]
     path = checkpoint / "sample_action.npz"
     np.savez(path, action=np.full((1, 1), 0.4, dtype=np.float32))
-    finding, = run_offline_trace(checkpoint, _observation_sample(checkpoint))
+    (finding,) = run_offline_trace(checkpoint, _observation_sample(checkpoint))
     assert finding.check_id == "INVALID_SAMPLE_SHAPE"
     assert finding.details["expected_feature_shape"] == [14]
     assert finding.details["actual_shape"] == [1, 1]
@@ -1133,12 +1301,19 @@ def test_action_shape_failure_points_to_adjacent_action_npz(checkpoints):
     assert finding.provenance.tensor_key == "action"
 
 
-@pytest.mark.parametrize("bad_key,bad_shape,expected", [
-    ("observation.raw_environment", (1, 1), [2]),
-    ("observation.images.top", (1, 1, 4, 5), [3, 4, 5]),
-])
+@pytest.mark.parametrize(
+    "bad_key,bad_shape,expected",
+    [
+        ("observation.raw_environment", (1, 1), [2]),
+        ("observation.images.top", (1, 1, 4, 5), [3, 4, 5]),
+    ],
+)
 def test_present_environment_and_visual_shapes_are_checked_through_native_renames(
-    checkpoints, tmp_path, bad_key, bad_shape, expected,
+    checkpoints,
+    tmp_path,
+    bad_key,
+    bad_shape,
+    expected,
 ):
     checkpoint = checkpoints["clean_act_modern"]
     features = {
@@ -1147,23 +1322,39 @@ def test_present_environment_and_visual_shapes_are_checked_through_native_rename
         "observation.images.top": PolicyFeature(FeatureType.VISUAL, (3, 4, 5)),
         "action": PolicyFeature(FeatureType.ACTION, (14,)),
     }
-    stats = {key: {"mean": torch.zeros(feature.shape), "std": torch.ones(feature.shape) * 0.5}
-             for key, feature in features.items() if feature.type is not FeatureType.VISUAL}
-    PolicyProcessorPipeline(name="policy_preprocessor", steps=[
-        RenameObservationsProcessorStep(rename_map={"observation.raw_environment": "observation.environment_state"}),
-        NormalizerProcessorStep(features=features, norm_map={
-            FeatureType.STATE: NormalizationMode.MEAN_STD, FeatureType.ENV: NormalizationMode.MEAN_STD,
-            FeatureType.ACTION: NormalizationMode.MEAN_STD, FeatureType.VISUAL: NormalizationMode.IDENTITY,
-        }, stats=stats),
-    ]).save_pretrained(checkpoint, config_filename="preprocessor_config.json")
-    sample = {"observation.state": np.full((1, 14), 0.2, dtype=np.float32),
-              "observation.raw_environment": np.full((1, 2), 0.2, dtype=np.float32),
-              "observation.images.top": np.zeros((1, 3, 4, 5), dtype=np.float32),
-              "action": np.full((1, 14), 0.4, dtype=np.float32)}
+    stats = {
+        key: {"mean": torch.zeros(feature.shape), "std": torch.ones(feature.shape) * 0.5}
+        for key, feature in features.items()
+        if feature.type is not FeatureType.VISUAL
+    }
+    PolicyProcessorPipeline(
+        name="policy_preprocessor",
+        steps=[
+            RenameObservationsProcessorStep(
+                rename_map={"observation.raw_environment": "observation.environment_state"}
+            ),
+            NormalizerProcessorStep(
+                features=features,
+                norm_map={
+                    FeatureType.STATE: NormalizationMode.MEAN_STD,
+                    FeatureType.ENV: NormalizationMode.MEAN_STD,
+                    FeatureType.ACTION: NormalizationMode.MEAN_STD,
+                    FeatureType.VISUAL: NormalizationMode.IDENTITY,
+                },
+                stats=stats,
+            ),
+        ],
+    ).save_pretrained(checkpoint, config_filename="preprocessor_config.json")
+    sample = {
+        "observation.state": np.full((1, 14), 0.2, dtype=np.float32),
+        "observation.raw_environment": np.full((1, 2), 0.2, dtype=np.float32),
+        "observation.images.top": np.zeros((1, 3, 4, 5), dtype=np.float32),
+        "action": np.full((1, 14), 0.4, dtype=np.float32),
+    }
     sample[bad_key] = np.zeros(bad_shape, dtype=np.float32)
     path = tmp_path / "bad_environment_or_visual.npz"
     np.savez(path, **sample)
-    finding, = run_offline_trace(checkpoint, path)
+    (finding,) = run_offline_trace(checkpoint, path)
     assert finding.check_id == "INVALID_SAMPLE_SHAPE"
     assert finding.status is DiagnosticStatus.FAIL
     assert finding.details["sample_feature_key"] == bad_key
@@ -1178,11 +1369,17 @@ def test_identity_policy_feature_shape_is_still_enforced(checkpoints, tmp_path):
     config = json.loads(path.read_text())
     config["steps"][0]["config"]["norm_map"]["STATE"] = "IDENTITY"
     path.write_text(json.dumps(config))
-    (checkpoint / "config.json").write_text(json.dumps({"input_features": {
-        "observation.state": {"type": "STATE", "shape": [14]},
-    }}))
+    (checkpoint / "config.json").write_text(
+        json.dumps(
+            {
+                "input_features": {
+                    "observation.state": {"type": "STATE", "shape": [14]},
+                }
+            }
+        )
+    )
     sample = tmp_path / "bad_identity_shape.npz"
     np.savez(sample, **{"observation.state": np.zeros((1, 1), dtype=np.float32)})
-    finding, = run_offline_trace(checkpoint, sample)
+    (finding,) = run_offline_trace(checkpoint, sample)
     assert finding.check_id == "INVALID_SAMPLE_SHAPE"
     assert finding.status is DiagnosticStatus.FAIL

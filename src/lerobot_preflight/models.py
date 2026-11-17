@@ -56,11 +56,15 @@ def _non_finite_values(value: Any, path: str = "/details") -> list[dict[str, str
     if isinstance(value, float) and not math.isfinite(value):
         return [{"path": path, "ieee754": _json_value(value)}]
     if isinstance(value, Mapping):
-        return [item for key, child in value.items() for item in _non_finite_values(
-            child, path + "/" + str(key).replace("~", "~0").replace("/", "~1"))]
+        return [
+            item
+            for key, child in value.items()
+            for item in _non_finite_values(child, path + "/" + str(key).replace("~", "~0").replace("/", "~1"))
+        ]
     if isinstance(value, (list, tuple)):
-        return [item for index, child in enumerate(value)
-                for item in _non_finite_values(child, f"{path}/{index}")]
+        return [
+            item for index, child in enumerate(value) for item in _non_finite_values(child, f"{path}/{index}")
+        ]
     if hasattr(value, "tolist"):
         return _non_finite_values(value.tolist(), path)
     return []
@@ -122,11 +126,18 @@ class PreflightReport:
         return any(
             finding.status in (DiagnosticStatus.FAIL, DiagnosticStatus.CONFLICT)
             or (self.strict and finding.severity is Severity.WARNING)
-            or (finding.status is DiagnosticStatus.UNKNOWN and (
-                (self.strict and not (finding.severity is Severity.INFO
-                                      and finding.details.get("strict_exempt", False)))
-                or (self.baseline_requested and finding.details.get("required_coverage", False))
-            ))
+            or (
+                finding.status is DiagnosticStatus.UNKNOWN
+                and (
+                    (
+                        self.strict
+                        and not (
+                            finding.severity is Severity.INFO and finding.details.get("strict_exempt", False)
+                        )
+                    )
+                    or (self.baseline_requested and finding.details.get("required_coverage", False))
+                )
+            )
             for finding in self.findings
         )
 
@@ -134,9 +145,12 @@ class PreflightReport:
         return {
             "checkpoint_dir": str(self.checkpoint_dir),
             "has_failures": self.has_failures(),
-            "gate_policy": {"strict": self.strict, "baseline_requested": self.baseline_requested,
-                            "required_comparison_unknowns_fail": self.baseline_requested,
-                            "warning_advisories_fail": self.strict,
-                            "informational_physical_unknowns_exempt": True},
+            "gate_policy": {
+                "strict": self.strict,
+                "baseline_requested": self.baseline_requested,
+                "required_comparison_unknowns_fail": self.baseline_requested,
+                "warning_advisories_fail": self.strict,
+                "informational_physical_unknowns_exempt": True,
+            },
             "findings": [finding.to_dict() for finding in self.findings],
         }
