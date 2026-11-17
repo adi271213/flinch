@@ -10,6 +10,7 @@ import functools
 import hashlib
 import json
 import math
+import os
 import re
 from collections.abc import Callable
 from copy import deepcopy
@@ -74,6 +75,9 @@ _MODE_STATS = {
     NormalizationMode.QUANTILES: ("q01", "q99"),
     NormalizationMode.QUANTILE10: ("q10", "q90"),
 }
+# On Python 3.12/Windows, st_ctime_ns is creation time, not content-change
+# time. Size/mtime/inode can all remain unchanged after an in-place rewrite.
+_USE_FILE_DIGEST_CACHE = os.name != "nt"
 
 
 def _normalizer_features(entry: dict[str, Any], state: dict[str, torch.Tensor]) -> dict[str, dict[str, Any]]:
@@ -656,12 +660,13 @@ def _find_lfs_pointers(root: Path, report: PreflightReport) -> set[Path]:
             local = _local_file(root, str(path.relative_to(root)))
             if not _is_lfs_pointer(local):
                 continue
+            # Pointer files are tiny; only extract standard fields as evidence.
+            with local.open("rb") as stream:
+                pointer = stream.read(4096).decode(errors="replace")
+            pointer_size = local.stat().st_size
         except (OSError, ValueError):
             continue
         pointers.add(local)
-        # Pointer files are tiny; only extract standard pointer fields as evidence.
-        with local.open("rb") as stream:
-            pointer = stream.read(4096).decode(errors="replace")
         oid = re.search(r"^oid sha256:([0-9a-f]{64})\r?$", pointer, re.MULTILINE)
         size = re.search(r"^size (\d+)\r?$", pointer, re.MULTILINE)
         _add(
@@ -671,7 +676,7 @@ def _find_lfs_pointers(root: Path, report: PreflightReport) -> set[Path]:
             "A Git LFS pointer was saved instead of safetensors tensor data.",
             {
                 "state_file": str(local),
-                "pointer_size_bytes": local.stat().st_size,
+                "pointer_size_bytes": pointer_size,
                 "lfs_oid_sha256": oid[1] if oid else None,
                 "declared_object_size": int(size[1]) if size else None,
                 "tensor_slice": [],
@@ -689,18 +694,45 @@ def _provenance(
     indices: list[int] | None = None,
 ) -> Provenance:
     digest = ""
+    digest_scope = None
     # Validated checkpoint artifacts and explicit metadata reach here as resolved
     # paths. Error provenance may retain a rejected link: never follow it to hash
     # an unrelated file merely to describe that validation failure.
-    if not path.is_symlink() and path.is_file():
-        stat = path.stat()
-        digest = _file_digest(str(path.resolve()), stat.st_size, stat.st_mtime_ns)
-    return Provenance(str(path), step_name, tensor_key, digest, indices)
+    try:
+        if not path.is_symlink() and path.is_file():
+            stat = path.stat()
+            digest = (
+                _file_digest(
+                    str(path.resolve()), stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns, stat.st_ino
+                )
+                if _USE_FILE_DIGEST_CACHE
+                else _uncached_file_digest(str(path.resolve()), stat.st_size)
+            )
+            if path.name == "model.safetensors" and not _is_lfs_pointer(path):
+                digest_scope = "safetensors_header_bytes_including_length_prefix"
+    except (OSError, ValueError):
+        # An inaccessible/corrupt evidence file must not erase already established
+        # findings. An empty digest explicitly makes no identity claim.
+        digest = ""
+        digest_scope = None
+    return Provenance(str(path), step_name, tensor_key, digest, indices, digest_scope=digest_scope)
 
 
 @functools.lru_cache(maxsize=256)
-def _file_digest(path: str, size: int, mtime_ns: int) -> str:
-    """Hash each file once per run; a multi-GB local model may be cited by many findings."""
+def _file_digest(path: str, size: int, mtime_ns: int, ctime_ns: int, inode: int) -> str:
+    """Cache by file identity/change metadata, without reading neural weight bodies."""
+    return _uncached_file_digest(path, size)
+
+
+def _uncached_file_digest(path: str, size: int) -> str:
+    """Hash tiny artifacts, or only the bounded header of a neural weight container."""
+    artifact = Path(path)
+    if artifact.name == "model.safetensors":
+        if not _is_lfs_pointer(artifact):
+            prefix, _ = _local_model_header(artifact)
+            return hashlib.sha256(prefix).hexdigest()[:12]
+        if size > 4096:
+            raise ValueError("Oversized Git LFS pointer artifact cannot be hashed as a tiny file")
     with open(path, "rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()[:12]
 
@@ -1029,12 +1061,13 @@ def _discover(root: Path, report: PreflightReport) -> list[tuple[Path, dict[str,
     if legacy_path.is_file() and not model_pointer:
         try:
             local_model = _local_file(root, "model.safetensors")
+            _local_model_header(local_model)
             with safe_open(local_model, framework="pt", device="cpu") as weights:
                 legacy_keys = _legacy_buffer_keys(weights.keys())
             legacy_evidence_path = local_model
             legacy_details = {
                 "evidence_source": "model_safetensors",
-                "digest_scope": "whole_model_file",
+                "digest_scope": "safetensors_header_bytes_including_length_prefix",
                 "legacy_buffer_keys": legacy_keys,
                 "tensor_values_available": True,
             }
@@ -2548,9 +2581,25 @@ def _verified_legacy_values(
     return state_path, state, metadata, header
 
 
-# Embedded normalization buffers are 1-D vectors; anything larger is not a buffer to screen.
-_LOCAL_LEGACY_MAX_ELEMENTS = 1 << 20
 _SAFETENSORS_DTYPES = {"F16": 2, "BF16": 2, "F32": 4, "F64": 8}
+
+
+def _local_model_header(model: Path) -> tuple[bytes, dict[str, dict[str, Any]]]:
+    """Read and validate the same bounded header contract used by Hub snapshots."""
+    # Imported at call time because the Hub runner itself imports run_preflight.
+    # Parsing is entirely local and never invokes the downloader.
+    from .hub_scanner import MAX_HEADER_BYTES, parse_safetensors_header
+
+    size = model.stat().st_size
+    with model.open("rb") as stream:
+        length_bytes = stream.read(8)
+        if len(length_bytes) != 8:
+            raise ValueError("Truncated safetensors length prefix")
+        length = int.from_bytes(length_bytes, "little")
+        if not 0 < length <= MAX_HEADER_BYTES or 8 + length > size:
+            raise ValueError("Safetensors header length exceeds the bounded header budget or file size")
+        prefix = length_bytes + stream.read(length)
+    return prefix, parse_safetensors_header(prefix, total_size=size)
 
 
 def _local_legacy_values(
@@ -2562,69 +2611,70 @@ def _local_legacy_values(
     bytes are read; neural weights are never loaded. The returned header/metadata mirror the
     structure the Hub range reader produces, so the same screening code runs on both.
     """
+    from .hub_scanner import (
+        MAX_LEGACY_NORMALIZATION_BYTES,
+        MAX_LEGACY_TENSOR_BYTES,
+        MAX_LEGACY_TENSORS,
+        _decode_tensor_slice,
+        _legacy_state_action_key,
+    )
+
     model = _local_file(root, "model.safetensors")
     size = model.stat().st_size
+    prefix, tensors = _local_model_header(model)
+    header_len = len(prefix) - 8
+    # Safetensors validates dtype/shape byte counts and the complete container
+    # layout without materializing any neural parameter tensor.
+    try:
+        with safe_open(model, framework="pt", device="cpu"):
+            pass
+    except Exception as exc:
+        raise ValueError(f"Corrupt or truncated safetensors model header: {exc}") from exc
+    if not _legacy_buffer_keys(tensors):
+        return None
+    candidates = [(key, value) for key, value in tensors.items() if _legacy_state_action_key(key)]
+    if len(candidates) > MAX_LEGACY_TENSORS:
+        raise ValueError("Legacy normalization tensor count exceeds the bounded payload budget")
+    descriptors: dict[str, Any] = {}
+    skipped: dict[str, str] = {}
+    state: dict[str, torch.Tensor] = {}
+    budget = 0
     with model.open("rb") as stream:
-        prefix = stream.read(8)
-        if len(prefix) != 8:
-            raise ValueError("model.safetensors is too short to contain a header")
-        header_len = int.from_bytes(prefix, "little")
-        if not 0 < header_len <= 100 * 1024 * 1024 or 8 + header_len > size:
-            raise ValueError("model.safetensors has an invalid header length")
-        raw_header = stream.read(header_len)
-        entries = json.loads(raw_header)
-        if not isinstance(entries, dict):
-            raise ValueError("model.safetensors header is not an object")
-        tensors: dict[str, Any] = {}
-        descriptors: dict[str, Any] = {}
-        state: dict[str, torch.Tensor] = {}
-        torch_dtypes = {
-            "F16": torch.float16,
-            "BF16": torch.bfloat16,
-            "F32": torch.float32,
-            "F64": torch.float64,
-        }
-        if not _legacy_buffer_keys(entries):
-            return None  # A modern checkpoint's weights file: nothing legacy to screen.
-        for key in _legacy_buffer_keys(entries):
-            entry = entries[key]
-            if not isinstance(entry, dict):
-                raise ValueError(f"Invalid header entry for {key}")
-            dtype, shape, offsets = entry.get("dtype"), entry.get("shape"), entry.get("data_offsets")
-            if dtype not in _SAFETENSORS_DTYPES or not isinstance(shape, list) or len(shape) > 1:
+        for key, descriptor in candidates:
+            dtype, shape = descriptor["dtype"], descriptor["shape"]
+            start, end = descriptor["data_offsets"]
+            if dtype not in _SAFETENSORS_DTYPES or len(shape) > 1 or any(dim <= 0 for dim in shape):
+                skipped[key] = "Only nonempty scalar/vector floating-point buffers are supported"
                 continue
-            count = shape[0] if shape else 1
-            start, end = offsets if isinstance(offsets, list) and len(offsets) == 2 else (-1, -1)
-            if (
-                not 0 <= count <= _LOCAL_LEGACY_MAX_ELEMENTS
-                or type(start) is not int
-                or end - start != count * _SAFETENSORS_DTYPES[dtype]
-                or 8 + header_len + end > size
-            ):
+            amount = math.prod(shape) * _SAFETENSORS_DTYPES[dtype]
+            if end - start != amount:
                 raise ValueError(f"Embedded buffer {key} has an inconsistent byte range")
-            stream.seek(8 + header_len + start)
-            payload = stream.read(end - start)
-            if len(payload) != end - start:
+            if amount > MAX_LEGACY_TENSOR_BYTES or budget + amount > MAX_LEGACY_NORMALIZATION_BYTES:
+                skipped[key] = "Normalization buffer exceeds the bounded payload budget"
+                continue
+            absolute_start, absolute_end = 8 + header_len + start, 8 + header_len + end
+            stream.seek(absolute_start)
+            payload = stream.read(amount)
+            if len(payload) != amount:
                 raise ValueError(f"Embedded buffer {key} is truncated")
-            state[key] = (
-                torch.frombuffer(bytearray(payload), dtype=torch_dtypes[dtype]).reshape(shape).clone()
-            )
-            tensors[key] = {"dtype": dtype, "shape": shape, "data_offsets": [start, end]}
+            state[key] = _decode_tensor_slice(payload, dtype, shape)
             descriptors[key] = {
-                **tensors[key],
-                "absolute_range": [8 + header_len + start, 8 + header_len + end - 1],
+                **descriptor,
+                "absolute_range": [absolute_start, absolute_end],
                 "payload_sha256": hashlib.sha256(payload).hexdigest(),
             }
-    if not state:
-        raise ValueError("model.safetensors contains no 1-D legacy normalization buffers")
+            budget += amount
     header = {"tensors": tensors, "header_len": header_len, "total_size": size, "source_file": model.name}
     metadata = {
         "source_file": model.name,
         "tensors": descriptors,
+        "skipped_tensors": skipped,
         "coverage_source": "local_model_safetensors_header",
-        "bytes_read": 8
-        + header_len
-        + sum(end - start for start, end in (t["data_offsets"] for t in tensors.values())),
+        "bytes_read": len(prefix) + budget,
+        "read_scope": "bounded_header_and_selected_state_action_payloads",
+        "header_sha256_prefix": hashlib.sha256(prefix).hexdigest()[:12],
+        "header_digest_scope": "safetensors_header_bytes_including_length_prefix",
+        "tensor_values_available": bool(state),
     }
     return model, state, metadata, header
 
@@ -2648,7 +2698,9 @@ def _screen_legacy_buffers(root: Path, report: PreflightReport, threshold: float
                 DiagnosticStatus.UNKNOWN,
                 summary,
                 details,
-                _metadata_provenance(root, "legacy_normalization.json"),
+                _metadata_provenance(
+                    root, "model.safetensors" if local_model else "legacy_normalization.json"
+                ),
             )
 
     try:
@@ -2801,6 +2853,7 @@ def _screen_legacy_buffers(root: Path, report: PreflightReport, threshold: float
                 "coverage_source": "legacy_tensor_ranges",
                 "missing_features": missing,
                 "screened_features": screened_features,
+                "skipped_tensors": metadata.get("skipped_tensors", {}),
                 "tensor_values_verified": True,
             },
         )
@@ -3195,11 +3248,19 @@ def run_preflight(
                     _provenance(path, index),
                 )
 
-    def isolated(stage: str, check: Callable[[], Any], provenance: Provenance | None = None) -> Any:
+    def isolated(
+        stage: str,
+        check: Callable[[], Any],
+        provenance: Provenance | None = None,
+        *,
+        numeric_coverage: bool = False,
+    ) -> Any:
         """One failing stage must not erase the findings of every other stage."""
         try:
             return check()
         except Exception as exc:
+            if numeric_coverage:
+                coverage_gaps.append({"stage": stage, "reason": "check_did_not_finish"})
             _add(
                 report,
                 "CHECK_INCOMPLETE",
@@ -3211,7 +3272,7 @@ def run_preflight(
             )
             return None
 
-    isolated("base-model statistics", lambda: _classify_unbound_base_stats(report))
+    isolated("base-model statistics", lambda: _classify_unbound_base_stats(report), numeric_coverage=True)
     isolated("action statistics", lambda: _compare_action_stats(report, action_stats))
     for config_path, config in pipelines:
         isolated(
@@ -3220,13 +3281,20 @@ def run_preflight(
                 _screen_native_normalization_chain, root, config_path, config, report, std_warn_threshold
             ),
             _provenance(config_path),
+            numeric_coverage=True,
         )
     isolated(
         "paired relative-action chain",
         lambda: _screen_paired_relative_chain(root, report, std_warn_threshold),
+        numeric_coverage=True,
     )
     screened.update(
-        isolated("legacy buffers", lambda: _screen_legacy_buffers(root, report, std_warn_threshold)) or set()
+        isolated(
+            "legacy buffers",
+            lambda: _screen_legacy_buffers(root, report, std_warn_threshold),
+            numeric_coverage=True,
+        )
+        or set()
     )
     # A filename alone cannot establish which feature, mode, or direction uses an orphan.
     for path in sorted(root.glob("*normalizer*.safetensors")):

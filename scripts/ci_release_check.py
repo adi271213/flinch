@@ -154,6 +154,28 @@ restored = post(pre({"action": raw_action}))["action"]
 assert restored[0, 3] > 1e8
 observed["action_stats_conflict"] = {"native_output_coordinate_3": float(restored[0, 3]),
                                      "raw_input_coordinate_3": float(raw_action[0, 3])}
+corrupt = root / "corrupt_stats"
+shutil.copytree(root / "clean", corrupt)
+pre_config = json.loads((corrupt / "policy_preprocessor.json").read_text())
+corrupt_state = corrupt / pre_config["steps"][0]["state_file"]
+corrupt_state.write_bytes(corrupt_state.read_bytes()[:12])
+try:
+    PolicyProcessorPipeline.from_pretrained(
+        corrupt, config_filename="policy_preprocessor.json", local_files_only=True)
+except Exception as exc:
+    observed["corrupt_stats"] = {"native_load_error": type(exc).__name__}
+else:
+    raise AssertionError("Native loading must reject truncated normalization state")
+legacy = root / "legacy_pathological"
+legacy.mkdir()
+legacy_std = torch.full((14,), .5)
+legacy_std[4] = 6.6630414e-6
+save_file({"model.weight": torch.zeros(1024),
+           "normalize_inputs.buffer_observation_state.mean": torch.zeros(14),
+           "normalize_inputs.buffer_observation_state.std": legacy_std,
+           "unnormalize_outputs.buffer_action.mean": torch.zeros(14),
+           "unnormalize_outputs.buffer_action.std": torch.full((14,), .5)}, legacy / "model.safetensors")
+(legacy / "config.json").write_text(json.dumps(policy), encoding="utf-8")
 np.savez(root / "invalid_shape.npz", **{"observation.state": np.zeros((1, 1), dtype=np.float32)})
 (root / "native_ground_truth.json").write_text(json.dumps(observed, indent=2), encoding="utf-8")
 assert not any(name == "lerobot_flinch" or name.startswith("lerobot_flinch.") for name in __import__("sys").modules)
@@ -424,6 +446,7 @@ def main(argv: list[str] | None = None) -> int:
                     *,
                     sample: bool = True,
                     conflicts: tuple[str, ...] = (),
+                    tool_errors: bool = False,
                     extra: tuple[str | Path, ...] = (),
                 ) -> None:
                     report = results / f"{name}.report.json"
@@ -438,7 +461,9 @@ def main(argv: list[str] | None = None) -> int:
                         command += ["--sample", fixtures / checkpoint / "sample.npz"]
                     run(name, [*command, *extra], expected)
                     try:
-                        findings = json.loads(report.read_text(encoding="utf-8"))["findings"]
+                        document = json.loads(report.read_text(encoding="utf-8"))
+                        findings = document["findings"]
+                        validate(name + "_report_exit_code", document.get("exit_code") == expected)
                         validate(
                             name + "_check_ids",
                             all(
@@ -462,6 +487,11 @@ def main(argv: list[str] | None = None) -> int:
                                 ),
                                 list(conflicts),
                             )
+                        if tool_errors:
+                            validate(
+                                name + "_tool_error_retained",
+                                any(finding.get("details", {}).get("tool_error") for finding in findings),
+                            )
                     except (OSError, KeyError, ValueError) as exc:
                         validate(name + "_json_report", False, str(exc))
 
@@ -470,6 +500,19 @@ def main(argv: list[str] | None = None) -> int:
                 case("silent_bypass", "silent_bypass", 1, ("SILENT_STEP_BYPASS",))
                 case("pathological_gain", "pathological_gain", 1, ("EMPIRICAL_GAIN_EXPLOSION",))
                 case("fp16_nan", "fp16_nan", 1, ("RUNTIME_NON_FINITE",))
+                case("corrupt_stats", "corrupt_stats", 1, ("FEATURE_CONTRACT",), sample=False)
+                case(
+                    "local_legacy",
+                    "legacy_pathological",
+                    1,
+                    ("SCHEMA_GENERATION_MISMATCH", "PATHOLOGICAL_STD_GAIN"),
+                    sample=False,
+                )
+                validate(
+                    "local_legacy_header_digest_scope",
+                    "digest_scope=safetensors_header_bytes_including_length_prefix"
+                    in (results / "local_legacy.stdout.txt").read_text(encoding="utf-8"),
+                )
                 case(
                     "action_stats_conflict",
                     "action_stats_conflict",
@@ -523,6 +566,66 @@ def main(argv: list[str] | None = None) -> int:
                     and "Traceback" not in missing_error
                     and not missing_report.exists(),
                 )
+                for name, option, value in (
+                    ("invalid_threshold", "--std-threshold", "nan"),
+                    ("invalid_graph_suffix", "--graph", results / "invalid.svg"),
+                ):
+                    run(name, [console, "--policy", fixtures / "clean", option, value], 2)
+                    error = (results / f"{name}.stderr.txt").read_text(encoding="utf-8")
+                    validate(name + "_usage_error", option in error and "Traceback" not in error)
+                hub_report = results / "hub_offline_tool_error.report.json"
+                run(
+                    "hub_offline_tool_error",
+                    [
+                        console,
+                        "--policy",
+                        "hf://flinch-test/offline-checkpoint",
+                        "--report",
+                        hub_report,
+                    ],
+                    3,
+                )
+                try:
+                    hub_document = json.loads(hub_report.read_text(encoding="utf-8"))
+                    validate(
+                        "hub_offline_structured_tool_error",
+                        hub_document.get("exit_code") == 3
+                        and any(
+                            finding.get("details", {}).get("tool_error")
+                            for finding in hub_document["findings"]
+                        )
+                        and not any(
+                            finding["status"] in {"FAIL", "CONFLICT"} for finding in hub_document["findings"]
+                        ),
+                    )
+                except (OSError, KeyError, ValueError) as exc:
+                    validate("hub_offline_structured_tool_error", False, str(exc))
+                foreign_report = results / "unrelated-report.json"
+                foreign_report.write_text('{"user_data": true}\n', encoding="utf-8")
+                foreign_report_hash = _hash(foreign_report)
+                for checkpoint, expected in (("clean", 3), ("pathological_gain", 1)):
+                    name = checkpoint + "_report_tool_error"
+                    run(
+                        name,
+                        [console, "--policy", fixtures / checkpoint, "--report", foreign_report],
+                        expected,
+                    )
+                    validate(name + "_preserves_foreign_output", _hash(foreign_report) == foreign_report_hash)
+                foreign_graph = results / "unrelated-graph.mmd"
+                foreign_graph.write_text("flowchart LR\n  user --> data\n", encoding="utf-8")
+                foreign_graph_hash = _hash(foreign_graph)
+                for checkpoint, expected in (("clean", 3), ("pathological_gain", 1)):
+                    name = checkpoint + "_graph_tool_error"
+                    case(
+                        name,
+                        checkpoint,
+                        expected,
+                        ("PATHOLOGICAL_STD_GAIN",) if expected == 1 else (),
+                        sample=False,
+                        tool_errors=True,
+                        extra=("--graph", foreign_graph),
+                    )
+                    validate(name + "_preserves_foreign_output", _hash(foreign_graph) == foreign_graph_hash)
                 validate(
                     "checkpoint_inputs_unchanged",
                     hashes

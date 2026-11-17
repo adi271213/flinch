@@ -82,21 +82,204 @@ MAX_EVIDENCE_ITEMS = 64
 _NUMBER_LIST = re.compile(r"\[(?:\s*-?[\d.eE+-]+(?:\s*,\s*-?[\d.eE+-]+)*\s*)\]")
 
 
-def _bounded(value: Any) -> Any:
-    """Cap long lists recursively, recording the original length next to each capped list."""
+def _sequence_leaves(value: Any) -> Any:
+    if isinstance(value, (list, tuple)):
+        for child in value:
+            yield from _sequence_leaves(child)
+    else:
+        yield value
+
+
+def _plain_sequence(value: Any) -> bool:
+    return all(
+        child is None or isinstance(child, (str, bool, int, float, Enum, Path))
+        for child in _sequence_leaves(value)
+    )
+
+
+def _sequence_summary(value: Any) -> tuple[list[Any], dict[str, Any]]:
+    sample: list[Any] = []
+    summary: dict[str, Any] = {
+        "total_count": 0,
+        "nan_count": 0,
+        "positive_infinity_count": 0,
+        "negative_infinity_count": 0,
+    }
+    low = high = None
+    for index, child in enumerate(_sequence_leaves(value)):
+        summary["total_count"] += 1
+        if len(sample) < MAX_EVIDENCE_ITEMS:
+            sample.append(child)
+        if not isinstance(child, (int, float)) or isinstance(child, bool):
+            continue
+        if isinstance(child, float) and not math.isfinite(child):
+            key = (
+                "nan_count"
+                if math.isnan(child)
+                else "positive_infinity_count"
+                if child > 0
+                else "negative_infinity_count"
+            )
+            summary[key] += 1
+            summary.setdefault("first_non_finite_flat_index", index)
+            summary.setdefault("first_non_finite_value", _json_value(child))
+        else:
+            low = child if low is None else min(low, child)
+            high = child if high is None else max(high, child)
+    if low is not None:
+        summary.update(finite_minimum=low, finite_maximum=high)
+    return sample, summary
+
+
+def _array_sample(value: Any) -> tuple[Any, dict[str, Any]]:
+    """Reduce numeric arrays before converting their bounded sample to Python."""
+    if type(value).__module__.startswith("torch"):
+        import torch
+
+        flat = value.detach().reshape(-1)
+        count = flat.numel()
+        summary: dict[str, Any] = {"total_count": count, "shape": list(value.shape)}
+        if count > MAX_EVIDENCE_ITEMS:
+            finite = torch.isfinite(flat)
+            finite_values = flat[finite]
+            if finite_values.numel() and not flat.is_complex():
+                summary.update(
+                    finite_minimum=finite_values.min().item(), finite_maximum=finite_values.max().item()
+                )
+            summary.update(
+                nan_count=int(torch.isnan(flat).sum()),
+                positive_infinity_count=int(torch.isposinf(flat).sum()) if not flat.is_complex() else 0,
+                negative_infinity_count=int(torch.isneginf(flat).sum()) if not flat.is_complex() else 0,
+            )
+            if not bool(finite.all()):
+                index = int((~finite).to(torch.int8).argmax())
+                summary.update(
+                    first_non_finite_flat_index=index, first_non_finite_value=_json_value(flat[index].item())
+                )
+            return flat[:MAX_EVIDENCE_ITEMS].cpu().tolist(), summary
+        return value.detach().cpu().tolist(), summary
+    import numpy as np
+
+    flat = np.asarray(value).reshape(-1)
+    count = int(flat.size)
+    summary = {"total_count": count, "shape": list(value.shape)}
+    if count > MAX_EVIDENCE_ITEMS and np.issubdtype(flat.dtype, np.number):
+        finite = np.isfinite(flat)
+        finite_values = flat[finite]
+        if finite_values.size and not np.iscomplexobj(flat):
+            summary.update(
+                finite_minimum=finite_values.min().item(), finite_maximum=finite_values.max().item()
+            )
+        summary.update(
+            nan_count=int(np.isnan(flat).sum()),
+            positive_infinity_count=int(np.isposinf(flat).sum()) if not np.iscomplexobj(flat) else 0,
+            negative_infinity_count=int(np.isneginf(flat).sum()) if not np.iscomplexobj(flat) else 0,
+        )
+        if not bool(finite.all()):
+            index = int((~finite).argmax())
+            summary.update(
+                first_non_finite_flat_index=index, first_non_finite_value=_json_value(flat[index].item())
+            )
+    return (flat[:MAX_EVIDENCE_ITEMS] if count > MAX_EVIDENCE_ITEMS else value).tolist(), summary
+
+
+def _complete_sequence_summary(value: Any) -> dict[str, Any] | None:
+    """Summarize even numeric arrays in an omitted tail of a structured sequence."""
+    combined: dict[str, Any] = {
+        "total_count": 0,
+        "nan_count": 0,
+        "positive_infinity_count": 0,
+        "negative_infinity_count": 0,
+    }
+    for leaf in _sequence_leaves(value):
+        if (
+            hasattr(leaf, "tolist")
+            and hasattr(leaf, "shape")
+            and type(leaf).__module__.startswith(("torch", "numpy"))
+        ):
+            sample, child = _array_sample(leaf)
+            if child["total_count"] <= MAX_EVIDENCE_ITEMS:
+                _, child = _sequence_summary(sample)
+        elif isinstance(leaf, (int, float)) and not isinstance(leaf, bool):
+            _, child = _sequence_summary([leaf])
+        else:
+            return None
+        if "first_non_finite_flat_index" in child and "first_non_finite_flat_index" not in combined:
+            combined["first_non_finite_flat_index"] = (
+                combined["total_count"] + child["first_non_finite_flat_index"]
+            )
+            combined["first_non_finite_value"] = child["first_non_finite_value"]
+        for key in ("total_count", "nan_count", "positive_infinity_count", "negative_infinity_count"):
+            combined[key] += child.get(key, 0)
+        if "finite_minimum" in child:
+            combined["finite_minimum"] = min(
+                combined.get("finite_minimum", child["finite_minimum"]), child["finite_minimum"]
+            )
+            combined["finite_maximum"] = max(
+                combined.get("finite_maximum", child["finite_maximum"]), child["finite_maximum"]
+            )
+    return combined
+
+
+def _bounded(value: Any, path: str = "/details", truncations: list[dict[str, Any]] | None = None) -> Any:
+    """Bound all sequence levels and retain summaries of the complete source."""
+    if truncations is None:
+        truncations = []
     if isinstance(value, Mapping):
         out: dict[str, Any] = {}
         for key, item in value.items():
-            if hasattr(item, "tolist") and not isinstance(item, (str, bytes)):
-                item = item.tolist()
-            if isinstance(item, (list, tuple)) and len(item) > MAX_EVIDENCE_ITEMS:
-                out[str(key)] = [_bounded(child) for child in item[:MAX_EVIDENCE_ITEMS]]
-                out[f"{key}_total_count"] = len(item)
-            else:
-                out[str(key)] = _bounded(item)
+            key = str(_json_value(key))
+            before = len(truncations)
+            child_path = path + "/" + key.replace("~", "~0").replace("/", "~1")
+            out[key] = _bounded(item, child_path, truncations)
+            direct = next((entry for entry in truncations[before:] if entry["path"] == child_path), None)
+            if direct is not None and f"{key}_total_count" not in value:
+                out[f"{key}_total_count"] = direct["total_count"]
         return out
+    if (
+        hasattr(value, "tolist")
+        and hasattr(value, "shape")
+        and type(value).__module__.startswith(("torch", "numpy"))
+    ):
+        sample, summary = _array_sample(value)
+        if summary["total_count"] > MAX_EVIDENCE_ITEMS:
+            truncations.append(
+                {
+                    "path": path,
+                    "shown_count": MAX_EVIDENCE_ITEMS,
+                    "sample_layout": "flattened row-major prefix",
+                    **summary,
+                }
+            )
+        return sample
     if isinstance(value, (list, tuple)):
-        return [_bounded(child) for child in value]
+        if _plain_sequence(value):
+            sample, summary = _sequence_summary(value)
+            if summary["total_count"] > MAX_EVIDENCE_ITEMS:
+                truncations.append(
+                    {
+                        "path": path,
+                        "shown_count": MAX_EVIDENCE_ITEMS,
+                        "sample_layout": "flattened sequence prefix",
+                        **summary,
+                    }
+                )
+                return sample
+        if len(value) > MAX_EVIDENCE_ITEMS:
+            complete_summary = _complete_sequence_summary(value)
+            truncations.append(
+                {
+                    "path": path,
+                    "total_count": len(value),
+                    "shown_count": MAX_EVIDENCE_ITEMS,
+                    "sample_layout": "sequence prefix",
+                    **({"numeric_summary": complete_summary} if complete_summary is not None else {}),
+                }
+            )
+        return [
+            _bounded(child, f"{path}/{index}", truncations)
+            for index, child in enumerate(value[:MAX_EVIDENCE_ITEMS])
+        ]
     return value
 
 
@@ -121,6 +304,7 @@ class Provenance:
     violating_indices: list[int] | None = None
     # Total number of offending coordinates when only the first ones are listed.
     violating_index_count: int | None = None
+    digest_scope: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -128,6 +312,7 @@ class Provenance:
             "step_name": _json_value(self.step_name),
             "tensor_key": self.tensor_key,
             "sha256_prefix": self.sha256_prefix,
+            **({"digest_scope": self.digest_scope} if self.digest_scope is not None else {}),
             "violating_indices": _json_value(
                 self.violating_indices[:MAX_EVIDENCE_ITEMS]
                 if self.violating_indices
@@ -152,17 +337,24 @@ class DiagnosticFinding:
     provenance: Provenance | None = None
 
     def to_dict(self) -> dict[str, Any]:
+        truncations: list[dict[str, Any]] = []
+        bounded = _bounded(self.details, truncations=truncations)
         result = {
             "check_id": self.check_id,
             "status": self.status.value,
             "severity": self.severity.value,
             "summary": bounded_text(self.summary),
-            "details": _json_value(_bounded(self.details)),
+            "details": _json_value(bounded),
             "provenance": self.provenance.to_dict() if self.provenance is not None else None,
         }
-        non_finite = _non_finite_values(_bounded(self.details))
+        if truncations:
+            result["evidence_truncation"] = truncations[:MAX_EVIDENCE_ITEMS]
+            result["evidence_truncation_count"] = len(truncations)
+        non_finite = _non_finite_values(bounded)
         if non_finite:
-            result["non_finite_values"] = non_finite
+            result["non_finite_values"] = non_finite[:MAX_EVIDENCE_ITEMS]
+            if len(non_finite) > MAX_EVIDENCE_ITEMS:
+                result["non_finite_value_count"] = len(non_finite)
         return result
 
 

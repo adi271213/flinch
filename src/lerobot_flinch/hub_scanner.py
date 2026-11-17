@@ -11,13 +11,15 @@ import ntpath
 import posixpath
 import random
 import re
-import socket
 import tempfile
 import time
 from collections.abc import Callable, Iterable
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
+from http.client import IncompleteRead
+from importlib import import_module
 from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
-from typing import Any, cast
+from typing import Any, TypeVar, cast
 from urllib.error import URLError
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
@@ -27,7 +29,7 @@ import torch
 from huggingface_hub import HfApi, get_hf_file_metadata, hf_hub_download, hf_hub_url
 from safetensors.torch import save_file
 
-from .models import DiagnosticFinding, DiagnosticStatus, Severity
+from .models import DiagnosticFinding, DiagnosticStatus, PreflightReport, Severity
 from .preflight import _local_file, _verified_legacy_values, run_preflight
 from .temporal import run_temporal_audit
 
@@ -47,6 +49,25 @@ _NEVER_RETRY = {
 }
 
 
+def _transport_error_types() -> tuple[type[BaseException], ...]:
+    """Use concrete installed HTTP-client errors, which do not inherit built-in timeouts."""
+    errors: list[type[BaseException]] = [ConnectionError, TimeoutError, URLError, IncompleteRead]
+    for module_name in ("httpx", "httpx2", "requests.exceptions"):
+        try:
+            module = import_module(module_name)
+        except ImportError:
+            continue
+        for name in ("NetworkError", "TimeoutException", "RemoteProtocolError", "ConnectionError", "Timeout"):
+            error = getattr(module, name, None)
+            if isinstance(error, type) and issubclass(error, BaseException):
+                errors.append(error)
+    return tuple(errors)
+
+
+_TRANSPORT_ERRORS = _transport_error_types()
+_RetryResult = TypeVar("_RetryResult")
+
+
 def _http_status(exc: BaseException) -> int | None:
     status = getattr(getattr(exc, "response", None), "status_code", getattr(exc, "code", None))
     return status if isinstance(status, int) else None
@@ -58,20 +79,38 @@ def _is_transient(exc: BaseException) -> bool:
     status = _http_status(exc)
     if status is not None:
         return status == 429 or 500 <= status < 600
-    return isinstance(exc, (ConnectionError, TimeoutError, URLError, socket.timeout))
+    return isinstance(exc, _TRANSPORT_ERRORS)
 
 
 def _retry_after(exc: BaseException) -> float | None:
     headers = getattr(getattr(exc, "response", None), "headers", None) or getattr(exc, "headers", None)
     try:
-        value = headers.get("Retry-After") if headers is not None else None
-        return min(float(value), RETRY_MAX_SECONDS) if value is not None else None
-    except (TypeError, ValueError):
+        value = (
+            next(
+                (value for key, value in headers.items() if key.lower() == "retry-after"),
+                None,
+            )
+            if headers is not None
+            else None
+        )
+        if value is None:
+            return None
+        try:
+            seconds = float(value)
+        except ValueError:
+            when = parsedate_to_datetime(value)
+            if when.tzinfo is None:
+                when = when.replace(tzinfo=timezone.utc)
+            seconds = (when - datetime.now(timezone.utc)).total_seconds()
+        return max(0.0, min(seconds, RETRY_MAX_SECONDS)) if math.isfinite(seconds) else None
+    except (AttributeError, OverflowError, TypeError, ValueError):
         return None
 
 
-def with_retries(call: Callable[[], Any], *, attempts: int = RETRY_ATTEMPTS) -> Any:
+def with_retries(call: Callable[[], _RetryResult], *, attempts: int = RETRY_ATTEMPTS) -> _RetryResult:
     """Run one Hub request, retrying transient failures with backoff and jitter."""
+    if type(attempts) is not int or not 1 <= attempts <= RETRY_ATTEMPTS:
+        raise ValueError(f"Retry attempts must be an integer between 1 and {RETRY_ATTEMPTS}")
     for attempt in range(attempts):
         try:
             return call()
@@ -222,27 +261,31 @@ def _range_read(url: str, start: int, size: int, opener: Callable[..., Any]) -> 
             "User-Agent": "lerobot-flinch/metadata-scanner",
         },
     )
-    with with_retries(lambda: opener(request, timeout=20)) as response:
-        status = response.status
-        if status not in (200, 206):
-            raise ValueError(f"Unexpected HTTP status for bounded header request: {status}")
-        if response.headers.get("Content-Encoding", "identity") not in ("identity", ""):
-            raise ValueError("Compressed responses cannot be treated as byte ranges")
-        declared_size = None
-        if status == 206:
-            match = re.fullmatch(r"bytes (\d+)-(\d+)/(\d+|\*)", response.headers.get("Content-Range", ""))
-            if not match or int(match[1]) != start or int(match[2]) < start:
-                raise ValueError("Server returned a different byte range than requested")
-            declared_size = int(match[3]) if match[3] != "*" else None
-        elif response.headers.get("Content-Length"):
-            declared_size = int(response.headers["Content-Length"])
-        # An HTTP 200 server ignored Range. Read only the bounded prefix needed,
-        # then close it; never access response.content or copy the full body.
-        skipped = _read_bounded(response, start) if status == 200 and start else b""
-        if status == 200 and len(skipped) != start:
-            raise ValueError("Truncated response before requested safetensors header offset")
-        result = _read_bounded(response, size)
-        return result, len(skipped) + len(result), declared_size
+
+    def read_once() -> tuple[bytes, int, int | None]:
+        with opener(request, timeout=20) as response:
+            status = response.status
+            if status not in (200, 206):
+                raise ValueError(f"Unexpected HTTP status for bounded header request: {status}")
+            if response.headers.get("Content-Encoding", "identity") not in ("identity", ""):
+                raise ValueError("Compressed responses cannot be treated as byte ranges")
+            declared_size = None
+            if status == 206:
+                match = re.fullmatch(r"bytes (\d+)-(\d+)/(\d+|\*)", response.headers.get("Content-Range", ""))
+                if not match or int(match[1]) != start or int(match[2]) < start:
+                    raise ValueError("Server returned a different byte range than requested")
+                declared_size = int(match[3]) if match[3] != "*" else None
+            elif response.headers.get("Content-Length"):
+                declared_size = int(response.headers["Content-Length"])
+            # An HTTP 200 server ignored Range. Read only the bounded prefix needed,
+            # then close it; never access response.content or copy the full body.
+            skipped = _read_bounded(response, start) if status == 200 and start else b""
+            if status == 200 and len(skipped) != start:
+                raise ValueError("Truncated response before requested safetensors header offset")
+            result = _read_bounded(response, size)
+            return result, len(skipped) + len(result), declared_size
+
+    return with_retries(read_once)
 
 
 def fetch_safetensors_header(
@@ -338,25 +381,29 @@ def _strict_tensor_range_read(
             "User-Agent": "lerobot-flinch/normalization-range-scanner",
         },
     )
-    with with_retries(lambda: opener(request, timeout=20)) as response:
-        if response.status != 206:
-            raise _LegacyRangeError(
-                "Legacy normalization tensors require HTTP 206; the response body was not read"
-            )
-        if response.headers.get("Content-Encoding", "identity") not in ("identity", ""):
-            raise _LegacyRangeError("Compressed tensor range responses are unsupported")
-        match = re.fullmatch(r"bytes (\d+)-(\d+)/(\d+)", response.headers.get("Content-Range", ""))
-        if not match or tuple(map(int, match.groups())) != (start, end, total_size):
-            raise _LegacyRangeError(
-                "Server returned a different tensor byte range or file size; body was not read"
-            )
-        length = response.headers.get("Content-Length")
-        if length is not None and int(length) != size:
-            raise _LegacyRangeError("Tensor range Content-Length disagrees with the requested byte count")
-        payload = _read_bounded(response, size)
-        if len(payload) != size:
-            raise _LegacyRangeError("Truncated legacy normalization tensor payload", len(payload))
-        return payload
+
+    def read_once() -> bytes:
+        with opener(request, timeout=20) as response:
+            if response.status != 206:
+                raise _LegacyRangeError(
+                    "Legacy normalization tensors require HTTP 206; the response body was not read"
+                )
+            if response.headers.get("Content-Encoding", "identity") not in ("identity", ""):
+                raise _LegacyRangeError("Compressed tensor range responses are unsupported")
+            match = re.fullmatch(r"bytes (\d+)-(\d+)/(\d+)", response.headers.get("Content-Range", ""))
+            if not match or tuple(map(int, match.groups())) != (start, end, total_size):
+                raise _LegacyRangeError(
+                    "Server returned a different tensor byte range or file size; body was not read"
+                )
+            length = response.headers.get("Content-Length")
+            if length is not None and int(length) != size:
+                raise _LegacyRangeError("Tensor range Content-Length disagrees with the requested byte count")
+            payload = _read_bounded(response, size)
+            if len(payload) != size:
+                raise _LegacyRangeError("Truncated legacy normalization tensor payload", len(payload))
+            return payload
+
+    return with_retries(read_once)
 
 
 def _decode_tensor_slice(raw: bytes, dtype: str, shape: list[int]) -> torch.Tensor:
@@ -1216,10 +1263,11 @@ def _audit_snapshot(manifest: dict[str, Any], std_threshold: float) -> dict[str,
                     else {"errors": manifest["errors"]},
                 )
             )
-        for stage, check in (
+        stages: tuple[tuple[str, Callable[[], PreflightReport | list[DiagnosticFinding]]], ...] = (
             ("preflight", lambda: run_preflight(checkpoint, std_threshold)),
             ("temporal", lambda: run_temporal_audit(checkpoint)),
-        ):
+        )
+        for stage, check in stages:
             try:
                 result = check()
                 findings.extend(result.findings if hasattr(result, "findings") else result)

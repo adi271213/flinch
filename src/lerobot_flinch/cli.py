@@ -20,7 +20,6 @@ from .hub_source import (
     resolve_checkpoint,
 )
 from .models import (
-    EXIT_TOOL_ERROR,
     DiagnosticFinding,
     DiagnosticStatus,
     PreflightReport,
@@ -248,6 +247,8 @@ def _finding_context(finding: DiagnosticFinding) -> str:
 
     if provenance.get("sha256_prefix"):
         context.append(f"sha256={provenance['sha256_prefix']}")
+        if provenance.get("digest_scope"):
+            context.append(f"digest_scope={provenance['digest_scope']}")
     return " | ".join(context)
 
 
@@ -376,7 +377,11 @@ def main(argv: list[str] | None = None) -> int:
             return _run_resolved(args, policy, baseline)
     except HubSourceError as exc:
         print(f"flinch: {exc}", file=sys.stderr)
-        return EXIT_TOOL_ERROR
+        report = PreflightReport(
+            str(args.policy), strict=args.strict, baseline_requested=args.baseline is not None
+        )
+        report.findings.append(_runner_error("Hub snapshot", exc))
+        return _finish_report(args, report)
 
 
 def _hub_snapshot_finding(resolved: ResolvedCheckpoint, role: str) -> DiagnosticFinding:
@@ -421,7 +426,9 @@ def _run_resolved(
             metadata=args.metadata,
         )
     except Exception as exc:
-        report = PreflightReport(str(args.policy))
+        report = PreflightReport(
+            str(args.policy), strict=args.strict, baseline_requested=args.baseline is not None
+        )
         report.findings.append(_runner_error("preflight run", exc))
     report.checkpoint_dir = policy.label
     hub_findings = [
@@ -430,23 +437,41 @@ def _run_resolved(
         if resolved is not None and resolved.manifest is not None
     ]
     report.findings[:0] = hub_findings
-    _print_report(report)
-    if args.report is not None:
-        try:
-            _write_report(args.report, report)
-        except Exception as exc:
-            print(f"Could not write report {args.report}: {exc}", file=sys.stderr)
-            return EXIT_TOOL_ERROR
-    if args.graph is not None:
+    return _finish_report(args, report, policy=policy)
+
+
+def _finish_report(
+    args: argparse.Namespace, report: PreflightReport, *, policy: ResolvedCheckpoint | None = None
+) -> int:
+    """Retain findings and output errors before determining the effective gate result."""
+    graph_written = False
+    if args.graph is not None and policy is not None:
         try:
             from .graph import build_processor_graph, write_processor_graph
 
             graph = build_processor_graph(policy.path, metadata_path=args.metadata)
             write_processor_graph(graph, args.graph)
-            print(f"Processor lineage graph: {args.graph}")
+            graph_written = True
         except Exception as exc:
+            finding = _runner_error("graph output", exc)
+            finding.details["output_path"] = str(args.graph)
+            report.findings.append(finding)
             print(f"Could not write graph {args.graph}: {exc}", file=sys.stderr)
-            return EXIT_TOOL_ERROR
+    try:
+        _print_report(report)
+        if graph_written:
+            print(f"Processor lineage graph: {args.graph}")
+    except Exception as exc:
+        report.findings.append(_runner_error("terminal output", exc))
+        print(f"Could not print terminal report: {exc}", file=sys.stderr)
+    if args.report is not None:
+        try:
+            _write_report(args.report, report)
+        except Exception as exc:
+            finding = _runner_error("report output", exc)
+            finding.details["output_path"] = str(args.report)
+            report.findings.append(finding)
+            print(f"Could not write report {args.report}: {exc}", file=sys.stderr)
     return report.exit_code()
 
 

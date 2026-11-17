@@ -280,3 +280,181 @@ def test_offline_mode_is_never_retried(no_sleep: list[float]) -> None:
     with pytest.raises(OfflineModeIsEnabled):
         hub_scanner.with_retries(lambda: (_ for _ in ()).throw(OfflineModeIsEnabled("offline")))
     assert not no_sleep
+
+
+# --- Complete evidence summaries and output error retention ---------------------------------
+
+
+def _finding_with_evidence(value):
+    from lerobot_flinch.models import DiagnosticFinding, Severity
+
+    return DiagnosticFinding(
+        "TEST_EVIDENCE", DiagnosticStatus.FAIL, Severity.CRITICAL, "Evidence", {"values": value}
+    )
+
+
+def test_tensor_evidence_is_sliced_before_tolist_and_keeps_full_numeric_summary(monkeypatch):
+    tensor = torch.zeros((3, 480, 640))
+    tensor.reshape(-1)[100] = float("nan")
+    tensor.reshape(-1)[101] = float("nan")
+    tensor.reshape(-1)[102] = float("inf")
+    tensor.reshape(-1)[103] = float("-inf")
+    tensor.reshape(-1)[-1] = 1e9
+    original = torch.Tensor.tolist
+    converted = []
+
+    def bounded_conversion(value):
+        converted.append(value.numel())
+        assert value.numel() <= MAX_EVIDENCE_ITEMS
+        return original(value)
+
+    monkeypatch.setattr(torch.Tensor, "tolist", bounded_conversion)
+    document = _finding_with_evidence(tensor).to_dict()
+    encoded = json.dumps(document, allow_nan=False)
+    assert len(encoded) < 10_000
+    assert converted and max(converted) == MAX_EVIDENCE_ITEMS
+    assert len(document["details"]["values"]) == MAX_EVIDENCE_ITEMS
+    assert document["details"]["values_total_count"] == tensor.numel()
+    (summary,) = document["evidence_truncation"]
+    assert summary["shape"] == [3, 480, 640]
+    assert summary["total_count"] == 921600
+    assert summary["finite_minimum"] == 0
+    assert summary["finite_maximum"] == 1e9
+    assert summary["nan_count"] == 2
+    assert summary["positive_infinity_count"] == summary["negative_infinity_count"] == 1
+    assert summary["first_non_finite_flat_index"] == 100
+    assert summary["first_non_finite_value"] == "NaN"
+    assert all(value == 0 for value in document["details"]["values"])
+
+
+@pytest.mark.parametrize("container", ["nested_python", "numpy", "tensor_in_list"])
+def test_nested_evidence_cannot_hide_unsampled_extrema_or_nan(container):
+    import numpy as np
+
+    value = [[0.0] * 1000 for _ in range(5)]
+    value[4][998] = 12345.0
+    value[4][999] = float("nan")
+    if container == "numpy":
+        value = np.asarray(value)
+    elif container == "tensor_in_list":
+        value = [torch.tensor(value)]
+    document = _finding_with_evidence(value).to_dict()
+    assert len(json.dumps(document, allow_nan=False)) < 10_000
+    (summary,) = document["evidence_truncation"]
+    assert summary["total_count"] == 5000
+    assert summary["finite_maximum"] == 12345.0
+    assert summary["nan_count"] == 1
+    assert summary["first_non_finite_flat_index"] == 4999
+    assert summary["first_non_finite_value"] == "NaN"
+
+
+@pytest.mark.parametrize("broken", [False, True])
+def test_graph_output_failure_keeps_findings_and_serializes_effective_exit(fixtures, tmp_path, broken):
+    name = "bug_5289_pathological_gain" if broken else "clean_act_modern"
+    graph = tmp_path / "checkpoint-artifact.json"
+    protected = '{"weights": "must remain unchanged"}'
+    graph.write_text(protected)
+    report_path = tmp_path / "report.json"
+    expected = 1 if broken else 3
+    assert (
+        main(["--policy", str(fixtures[name]), "--graph", str(graph), "--report", str(report_path)])
+        == expected
+    )
+    assert graph.read_text() == protected
+    report = json.loads(report_path.read_text())
+    assert report["exit_code"] == expected
+    errors = [finding for finding in report["findings"] if finding["details"].get("tool_error")]
+    assert len(errors) == 1 and errors[0]["details"]["stage"] == "graph output"
+    assert errors[0]["status"] == "UNKNOWN"
+    assert any(finding["check_id"] == "PHYSICAL_SEMANTICS" for finding in report["findings"])
+    if broken:
+        assert any(
+            finding["check_id"] == "PATHOLOGICAL_STD_GAIN" and finding["status"] == "FAIL"
+            for finding in report["findings"]
+        )
+
+
+@pytest.mark.parametrize("broken", [False, True])
+def test_report_overwrite_refusal_keeps_real_finding_exit_priority(fixtures, tmp_path, broken):
+    name = "bug_5289_pathological_gain" if broken else "clean_act_modern"
+    destination = tmp_path / "audited-artifact.json"
+    original = '{"private": "not a prior report"}'
+    destination.write_text(original)
+    assert main(["--policy", str(fixtures[name]), "--report", str(destination)]) == (1 if broken else 3)
+    assert destination.read_text() == original
+
+
+@pytest.mark.parametrize("strict", [False, True])
+@pytest.mark.parametrize("baseline", [False, True])
+def test_tool_error_only_preserves_exit_three_under_gate_modes(
+    fixtures, tmp_path, monkeypatch, strict, baseline
+):
+    import lerobot_flinch.cli as cli_module
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("injected isolated tool failure")
+
+    monkeypatch.setattr(cli_module, "run_preflight", broken)
+    checkpoint = fixtures["clean_act_modern"]
+    report_path = tmp_path / "report.json"
+    args = ["--policy", str(checkpoint), "--report", str(report_path)]
+    if strict:
+        args += ["--strict"]
+    if baseline:
+        args += ["--baseline", str(checkpoint)]
+    assert main(args) == 3
+    report = json.loads(report_path.read_text())
+    assert report["exit_code"] == 3
+    assert report["gate_policy"]["strict"] is strict
+    assert report["gate_policy"]["baseline_requested"] is baseline
+    assert any(finding["details"].get("tool_error") for finding in report["findings"])
+    assert not any(finding["status"] in ("FAIL", "CONFLICT") for finding in report["findings"])
+
+
+def test_hub_tool_failure_writes_requested_structured_report_without_network(tmp_path, monkeypatch):
+    from contextlib import contextmanager
+
+    import lerobot_flinch.cli as cli_module
+    from lerobot_flinch.hub_source import HubSourceError
+
+    @contextmanager
+    def unavailable(*args, **kwargs):
+        raise HubSourceError("injected unavailable Hub")
+        yield
+
+    monkeypatch.setattr(cli_module, "resolve_checkpoint", unavailable)
+    report_path = tmp_path / "report.json"
+    assert main(["--policy", "hf://org/checkpoint", "--strict", "--report", str(report_path)]) == 3
+    report = json.loads(report_path.read_text())
+    assert report["exit_code"] == 3
+    assert report["gate_policy"]["strict"] is True
+    assert report["findings"][0]["details"]["tool_error"] is True
+
+
+def test_terminal_output_error_is_retained_in_json_report(fixtures, tmp_path, monkeypatch):
+    import lerobot_flinch.cli as cli_module
+
+    def broken(*args, **kwargs):
+        raise OSError("terminal output unavailable")
+
+    monkeypatch.setattr(cli_module, "_print_report", broken)
+    report_path = tmp_path / "report.json"
+    assert main(["--policy", str(fixtures["clean_act_modern"]), "--report", str(report_path)]) == 3
+    report = json.loads(report_path.read_text())
+    assert report["exit_code"] == 3
+    assert any(finding["details"].get("stage") == "terminal output" for finding in report["findings"])
+
+
+def test_omitted_array_in_a_long_sequence_keeps_its_numeric_evidence():
+    values = [torch.zeros(2) for _ in range(65)]
+    values[-1][0] = 999.0
+    values[-1][1] = float("nan")
+    document = _finding_with_evidence(values).to_dict()
+    (truncation,) = document["evidence_truncation"]
+    assert truncation["total_count"] == 65
+    summary = truncation["numeric_summary"]
+    assert summary["total_count"] == 130
+    assert summary["nan_count"] == 1
+    assert summary["finite_maximum"] == 999.0
+    assert summary["first_non_finite_flat_index"] == 129
+    assert all(value == [0.0, 0.0] for value in document["details"]["values"])
