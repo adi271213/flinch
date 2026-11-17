@@ -40,7 +40,7 @@ Passing a processor audit does not certify hardware safety, neural weight identi
 
 ```mermaid
 flowchart LR
-  ckpt[Local checkpoint] --> pre[Static preflight]
+  ckpt["Local or hf:// checkpoint"] --> pre[Static preflight]
   ckpt --> temporal[Chronology audit]
   ckpt --> trace[Native numeric trace]
   sample[Optional NPZ sample] --> trace
@@ -52,7 +52,7 @@ flowchart LR
   delta --> findings
   findings --> gate[Terminal report and exit gate]
   findings --> json[JSON report]
-  ckpt --> graph[Feature and processor lineage]
+  ckpt --> lineage[Feature and processor lineage]
 ```
 
 The runtime uses LeRobot's `PolicyProcessorPipeline`, steps, state, feature transforms and hooks. Static and comparison checks also execute bounded native numeric probes on CPU. There is no parallel processor implementation, and uninspected checkpoint constructors are not imported to fill a coverage gap.
