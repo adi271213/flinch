@@ -339,6 +339,14 @@ def main(argv: list[str] | None = None) -> int:
                 f"--{option} {value!r} is not a local directory. "
                 f"To audit a Hugging Face Hub checkpoint, use --{option} hf://{value}"
             )
+        # A typo in a path is a usage error, not evidence of a broken checkpoint.
+        if parse_hub_reference(value) is None and not Path(value).is_dir():
+            problem = "is a file, not a checkpoint directory" if Path(value).exists() else "does not exist"
+            parser.error(f"--{option} {value!r} {problem}")
+    for option in ("sample", "metadata"):
+        value = getattr(args, option)
+        if value is not None and not value.is_file():
+            parser.error(f"--{option} {str(value)!r} is not a file")
 
     try:
         with ExitStack() as stack:

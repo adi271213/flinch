@@ -100,6 +100,7 @@ Flinch never guesses physical units. A tensor's shape can't tell you whether a j
 ## ✅ What it checks
 
 - **Stats that blow up inputs:** near-zero std, min equal to max, NaN or Inf, and stats that are missing or saved under the wrong name so normalization is silently skipped.
+- **Actions scaled back wrong:** the postprocessor turns the policy's output back into real commands using the action stats. If those differ from the stats used in training, every command comes out rescaled. Flinch compares the two and shows you the coordinates that disagree.
 - **Stacked normalizers:** two steps that are each fine but multiply into a huge gain.
 - **Precision:** values that overflow when the checkpoint runs in float16.
 - **Base models:** checkpoints like `lerobot/smolvla_base` that need your dataset's stats before they can run. You get one clear message telling you to fine-tune or bind stats, instead of a wall of errors.

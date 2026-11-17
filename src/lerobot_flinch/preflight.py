@@ -1485,6 +1485,151 @@ def _gain_finding(
         finding.summary += f" A +0.20 float32 probe produces output magnitude up to {maximum_output:.8g}."
 
 
+# Un-normalizing multiplies every policy output by the saved action scale. Above this numeric
+# scale an advisory is raised; units are undeclared, so it is never a FAIL on its own.
+EXTREME_ACTION_SCALE = 1e6
+
+
+def _record_action_stats(
+    records: list[dict[str, Any]],
+    path: Path,
+    config: dict[str, Any],
+    entry: dict[str, Any],
+    index: int,
+    state: dict[str, torch.Tensor],
+) -> None:
+    """Remember the active ``action`` statistics of one native (un)normalizer step."""
+    step_config = entry.get("config", {})
+    norm_map = step_config.get("norm_map", {}) if isinstance(step_config, dict) else {}
+    try:
+        mode = NormalizationMode(norm_map.get(FeatureType.ACTION.value, NormalizationMode.IDENTITY.value))
+    except ValueError:
+        return
+    required = _MODE_STATS.get(mode, ())
+    keys = [f"action.{stat}" for stat in required]
+    if not required or not all(key in state for key in keys):
+        return
+    records.append(
+        {
+            "direction": "inverse" if _normalization_base(entry) is UnnormalizerProcessorStep else "forward",
+            "role": _role(path, config),
+            "path": path,
+            "index": index,
+            "name": entry.get("registry_name", entry.get("class", path.stem)),
+            "mode": mode,
+            "stats": {stat: state[f"action.{stat}"].detach().double() for stat in required},
+        }
+    )
+
+
+def _action_scale(record: dict[str, Any]) -> torch.Tensor:
+    stats = record["stats"]
+    if record["mode"] is NormalizationMode.MEAN_STD:
+        return stats["std"].abs()
+    low, high = (stats[stat] for stat in _MODE_STATS[record["mode"]])
+    return ((high - low) / 2).abs()
+
+
+def _compare_action_stats(report: PreflightReport, records: list[dict[str, Any]]) -> None:
+    """Training normalizes actions with the same statistics inference uses to un-normalize them.
+
+    LeRobot builds both processors from one dataset's statistics, so a disagreement between the
+    preprocessor's action normalizer and the postprocessor's action un-normalizer means policy
+    outputs are rescaled by a factor the policy was never trained with.
+    """
+    forward = [record for record in records if record["direction"] == "forward"]
+    inverse = [record for record in records if record["direction"] == "inverse"]
+    for out in inverse:
+        scale = _action_scale(out)
+        extreme = torch.isfinite(scale) & (scale > EXTREME_ACTION_SCALE)
+        if bool(extreme.any()):
+            indices = extreme.reshape(-1).nonzero().flatten().tolist()
+            values = scale.reshape(-1)[indices].tolist()
+            stat = "std" if out["mode"] is NormalizationMode.MEAN_STD else "span"
+            _add(
+                report,
+                "EXTREME_ACTION_SCALE",
+                DiagnosticStatus.UNKNOWN,
+                f"Un-normalization multiplies policy outputs by up to {max(values):.3g} at action indices "
+                f"{indices}. Units are undeclared, so this is not a failure on its own; check the saved "
+                "action statistics.",
+                {
+                    "step_index": out["index"],
+                    "feature_key": "action",
+                    "normalization_mode": out["mode"].value,
+                    "action_scale_statistic": stat,
+                    "action_scale_values": values,
+                    "extreme_action_scale_threshold": EXTREME_ACTION_SCALE,
+                    "tensor_slice": values,
+                },
+                _provenance(out["path"], out["name"], f"action.{_MODE_STATS[out['mode']][-1]}", indices),
+                severity=Severity.WARNING,
+            )
+        for into in forward:
+            if into["role"] == out["role"]:
+                continue
+            location = {
+                "preprocessor_file": into["path"].name,
+                "preprocessor_step_index": into["index"],
+                "postprocessor_file": out["path"].name,
+                "postprocessor_step_index": out["index"],
+                "step_index": out["index"],
+                "feature_key": "action",
+            }
+            if into["mode"] is not out["mode"]:
+                _add(
+                    report,
+                    "ACTION_STATS_CONFLICT",
+                    DiagnosticStatus.CONFLICT,
+                    f"Actions are normalized with {into['mode'].value} but un-normalized with "
+                    f"{out['mode'].value}; policy outputs will not be mapped back to the training scale.",
+                    {
+                        **location,
+                        "preprocessor_mode": into["mode"].value,
+                        "postprocessor_mode": out["mode"].value,
+                    },
+                    _provenance(out["path"], out["name"], "action"),
+                )
+                continue
+            for stat in _MODE_STATS[out["mode"]]:
+                try:
+                    trained, used = torch.broadcast_tensors(into["stats"][stat], out["stats"][stat])
+                except RuntimeError:
+                    _add(
+                        report,
+                        "ACTION_STATS_CONFLICT",
+                        DiagnosticStatus.CONFLICT,
+                        f"action.{stat} has shape {list(into['stats'][stat].shape)} in the preprocessor but "
+                        f"{list(out['stats'][stat].shape)} in the postprocessor.",
+                        location,
+                        _provenance(out["path"], out["name"], f"action.{stat}"),
+                    )
+                    continue
+                differs = ~torch.isclose(trained, used, rtol=1e-4, atol=1e-6, equal_nan=True)
+                if not bool(differs.any()):
+                    continue
+                indices = differs.reshape(-1).nonzero().flatten().tolist()
+                trained_values = trained.reshape(-1)[indices].tolist()
+                used_values = used.reshape(-1)[indices].tolist()
+                _add(
+                    report,
+                    "ACTION_STATS_CONFLICT",
+                    DiagnosticStatus.CONFLICT,
+                    f"action.{stat} differs between the preprocessor and the postprocessor at indices "
+                    f"{indices} (e.g. {trained_values[0]:.6g} vs {used_values[0]:.6g}). Policy outputs "
+                    "will be un-normalized with statistics the policy was not trained on.",
+                    {
+                        **location,
+                        "normalization_mode": out["mode"].value,
+                        "statistic": stat,
+                        "preprocessor_values": trained_values,
+                        "postprocessor_values": used_values,
+                        "tensor_slice": used_values,
+                    },
+                    _provenance(out["path"], out["name"], f"action.{stat}", indices),
+                )
+
+
 def _screen_normalizer_state(
     report: PreflightReport,
     path: Path,
@@ -2551,6 +2696,7 @@ def run_preflight(
             finding.provenance.step_name = references[0]["step_name"]
     screened: set[Path] = set()
     coverage_gaps: list[dict[str, Any]] = []
+    action_stats: list[dict[str, Any]] = []
     inspected_numeric_contract = {_role(path, config) for path, config in pipelines} >= {
         "pre",
         "post",
@@ -2629,6 +2775,7 @@ def run_preflight(
                         _input_float_dtype(config["steps"], index),
                         config_path=path,
                     )
+                _record_action_stats(action_stats, path, config, entry, index, state)
                 missing = [key for key in required_keys if key not in state]
                 if missing:
                     coverage_gaps.append(
@@ -2653,6 +2800,7 @@ def run_preflight(
                     _provenance(path, index),
                 )
     _classify_unbound_base_stats(report)
+    _compare_action_stats(report, action_stats)
     for config_path, config in pipelines:
         _screen_native_normalization_chain(root, config_path, config, report, std_warn_threshold)
     _screen_paired_relative_chain(root, report, std_warn_threshold)
