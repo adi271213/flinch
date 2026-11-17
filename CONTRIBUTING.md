@@ -19,7 +19,7 @@ python -m pytest -q
 
 The test suite generates small checkpoints with native LeRobot classes. It does not require downloaded neural weights, `.lerobot_ref`, a simulator, or hardware. Installed-release tests must not depend on an editable install or inherited `PYTHONPATH`. Test subprocesses that explicitly exercise source-tree imports use `tests/subprocess_env.py`.
 
-Ruff checks syntax, undefined/unused names, import order, and basic Python errors. Apply formatting with `python -m ruff format src scripts tests`. Mypy checks all nine runtime modules in strict mode; third-party imports and dynamic tensor/JSON interfaces remain explicit boundaries. Native API and feature-shape behavior are verified by pytest. Do not add broad lint or typing suppressions to hide an unsupported contract.
+Ruff checks syntax, undefined/unused names, import order, and basic Python errors. Apply formatting with `python -m ruff format src scripts tests`. Mypy checks all runtime modules in strict mode; third-party imports and dynamic tensor/JSON interfaces remain explicit boundaries. Native API and feature-shape behavior are verified by pytest. Do not add broad lint or typing suppressions to hide an unsupported contract.
 
 ## Branches, commits and pull requests
 

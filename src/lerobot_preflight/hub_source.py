@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 import tempfile
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -75,10 +75,21 @@ def resolve_checkpoint(value: str | Path, *, api: Any | None = None) -> Iterator
 
     from .hub_scanner import download_lightweight_snapshot
 
-    with tempfile.TemporaryDirectory(prefix="lerobot-preflight-hub-") as temporary:
-        manifest = download_lightweight_snapshot(
-            reference.repo_id, Path(temporary) / "snapshot", api=api, revision=reference.revision
-        )
+    failure = f"Could not fetch the processor artifacts of {reference.display()}"
+    with ExitStack() as stack:
+        try:
+            temporary = stack.enter_context(tempfile.TemporaryDirectory(prefix="lerobot-preflight-hub-"))
+            manifest = download_lightweight_snapshot(
+                reference.repo_id, Path(temporary) / "snapshot", api=api, revision=reference.revision
+            )
+        except (OSError, ValueError) as exc:
+            raise HubSourceError(f"{failure} ({type(exc).__name__}: {exc})") from exc
+        access = manifest.get("repo_access", {})
+        if access.get("private") or access.get("gated"):
+            raise HubSourceError(
+                f"{failure}. Gated or private repositories are not supported; "
+                "download the checkpoint and pass its local path."
+            )
         if manifest.get("critical_download_errors"):
             errors = manifest.get("errors") or []
             skipped = [item for item in manifest.get("skipped_files", []) if item.get("reason")]
@@ -86,7 +97,7 @@ def resolve_checkpoint(value: str | Path, *, api: Any | None = None) -> Iterator
                 f"{item.get('file_path') or 'repository'}: {item.get('error')}" for item in errors
             ) or "; ".join(f"{item['file_path']}: {item['reason']}" for item in skipped)
             raise HubSourceError(
-                f"Could not fetch the processor artifacts of {reference.display()}"
+                failure
                 + (f" ({reasons})" if reasons else "")
                 + ". Gated or private repositories are not supported; download the checkpoint and pass its local path."
             )
