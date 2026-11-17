@@ -98,7 +98,7 @@ def run_checks(
 
 
 def _is_unbound_missing_buffer(finding: DiagnosticFinding) -> bool:
-    """A missing-buffer failure explained by unbound multi-dataset base-model statistics."""
+    """A missing-buffer candidate with multi-dataset statistics to match by source."""
     return (
         finding.check_id == "FEATURE_CONTRACT"
         and finding.status is DiagnosticStatus.FAIL
@@ -113,39 +113,81 @@ def _fold_base_model_prerequisites(report: PreflightReport) -> None:
     The status stays FAIL: a base model is not deployable as-is. Every folded finding is kept
     verbatim under ``details.folded_findings`` in the JSON report.
     """
-    unbound = [
-        finding
-        for finding in report.findings
-        if finding.check_id == "UNBOUND_BASE_MODEL_STATS" and finding.status is DiagnosticStatus.FAIL
-    ]
-    if not unbound:
-        return
-    primary = unbound[0]
-    folded = unbound[1:] + [finding for finding in report.findings if _is_unbound_missing_buffer(finding)]
-    if not folded:
-        return
-    missing: list[dict[str, Any]] = []
-    for finding in folded:
+
+    def source(finding: DiagnosticFinding) -> tuple[str, str | int | None, int | None] | None:
         provenance = finding.provenance
-        if finding.check_id != "FEATURE_CONTRACT" or provenance is None or not provenance.tensor_key:
+        if provenance is None:
+            return None
+        index = finding.details.get("step_index")
+        return provenance.file_path, provenance.step_name, index if isinstance(index, int) else None
+
+    groups: dict[tuple[str, ...], list[DiagnosticFinding]] = {}
+    for finding in report.findings:
+        if finding.check_id != "UNBOUND_BASE_MODEL_STATS" or finding.status is not DiagnosticStatus.FAIL:
             continue
-        entry = {"processor_file": Path(provenance.file_path).name, "tensor_key": provenance.tensor_key}
-        if entry not in missing:
-            missing.append(entry)
-    files = sorted({entry["processor_file"] for entry in missing if entry["processor_file"]})
-    primary.summary = (
-        "Base model: the target dataset's normalization statistics are not bound "
-        f"({len(missing)} required buffers missing across {len(files)} processor files). "
-        "Fine-tune on your dataset or bind its statistics before deploying; as-is, "
-        "normalization is silently bypassed."
-    )
-    primary.details.update(
-        {
-            "missing_buffers": missing,
-            "folded_findings": [finding.to_dict() for finding in folded],
-        }
-    )
-    folded_ids = {id(finding) for finding in folded}
+        prefixes = _multi_dataset_action_prefixes(finding.details.get("available_buffer_keys", []))
+        if prefixes and source(finding) is not None:
+            groups.setdefault(prefixes, []).append(finding)
+
+    folded_ids: set[int] = set()
+    root = Path(report.checkpoint_dir)
+    for prefixes, unbound in groups.items():
+        required: dict[tuple[str, str | int | None, int | None], set[str]] = {}
+        for finding in unbound:
+            location = source(finding)
+            if location is not None:
+                required.setdefault(location, set()).update(
+                    finding.details.get("required_buffer_keys", [])
+                    + finding.details.get("missing_observation_state_stats", [])
+                )
+        related = []
+        for finding in report.findings:
+            location = source(finding)
+            provenance = finding.provenance
+            if (
+                _is_unbound_missing_buffer(finding)
+                and _multi_dataset_action_prefixes(finding.details.get("available_buffer_keys", []))
+                == prefixes
+                and location is not None
+                and provenance is not None
+                and provenance.tensor_key in required.get(location, set())
+            ):
+                related.append(finding)
+        if not related:
+            continue  # Do not invent a missing-buffer count from unavailable lineage.
+        primary = unbound[0]
+        folded = unbound[1:] + related
+        missing: list[dict[str, Any]] = []
+        for finding in related:
+            provenance = finding.provenance
+            assert provenance is not None
+            path = Path(provenance.file_path)
+            try:
+                processor_file = path.relative_to(root).as_posix()
+            except ValueError:
+                processor_file = str(path)
+            entry = {
+                "processor_file": processor_file,
+                "step_index": finding.details.get("step_index"),
+                "step_name": provenance.step_name,
+                "tensor_key": provenance.tensor_key,
+            }
+            if entry not in missing:
+                missing.append(entry)
+        files = {entry["processor_file"] for entry in missing}
+        primary.summary = (
+            "Base model: the target dataset's normalization statistics are not bound "
+            f"({len(missing)} required buffers missing across {len(files)} processor files). "
+            "Fine-tune on your dataset or bind its statistics before deploying; as-is, "
+            "normalization is silently bypassed."
+        )
+        primary.details.update(
+            {
+                "missing_buffers": missing,
+                "folded_findings": [finding.to_dict() for finding in folded],
+            }
+        )
+        folded_ids.update(id(finding) for finding in folded if finding is not primary)
     report.findings[:] = [finding for finding in report.findings if id(finding) not in folded_ids]
 
 

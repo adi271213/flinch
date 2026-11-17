@@ -73,7 +73,8 @@ def _repository_unavailable(error: dict[str, Any]) -> bool:
 
 def _first_line(message: object) -> str:
     """Keep the cause of a Hub client error without its multi-line help text."""
-    return str(message).strip().splitlines()[0] if message else "unknown error"
+    lines = str(message).strip().splitlines() if message is not None else []
+    return lines[0] if lines else "unknown error"
 
 
 @contextmanager

@@ -3,14 +3,21 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
+import torch
+from lerobot.configs import FeatureType, NormalizationMode, PolicyFeature
+from lerobot.processor import NormalizerProcessorStep, PolicyProcessorPipeline
+from safetensors.torch import load_file
 
 import lerobot_preflight.hub_scanner as hub_scanner
 from lerobot_preflight.cli import main, run_checks
+from lerobot_preflight.hub_source import _first_line
 from lerobot_preflight.models import DiagnosticStatus
 from lerobot_preflight.preflight import run_preflight
+from lerobot_preflight.privilege_delta import run_privilege_delta
 from tests.fixtures.make_bug_fixtures import make_bug_fixtures
 from tests.test_preflight import _write_multi_dataset_buffers
 
@@ -71,6 +78,163 @@ def test_base_model_json_report_keeps_folded_evidence(tmp_path: Path) -> None:
     (unbound,) = [f for f in findings if f["check_id"] == "UNBOUND_BASE_MODEL_STATS"]
     folded = unbound["details"]["folded_findings"]
     assert {f["check_id"] for f in folded} == {"UNBOUND_BASE_MODEL_STATS", "FEATURE_CONTRACT"}
+
+
+@pytest.mark.parametrize("same_namespaces", [False, True])
+def test_unrelated_multistage_buffer_failure_stays_separate(tmp_path: Path, same_namespaces: bool) -> None:
+    checkpoint = _base_model_checkpoint(tmp_path)
+    original = PolicyProcessorPipeline.from_pretrained(
+        checkpoint, config_filename="preprocessor_config.json", local_files_only=True
+    )
+    first = deepcopy(original.steps[0])
+    name = original.name
+    del original
+    namespaces = ("so100-blue", "so100-red", "so100") if same_namespaces else ("factoryA", "factoryB")
+    stats = {
+        f"{namespace}.buffer.action": {"mean": torch.zeros(14), "std": torch.ones(14)}
+        for namespace in namespaces
+    }
+    stats["observation.environment_state"] = {"mean": torch.zeros(14)}
+    unrelated = NormalizerProcessorStep(
+        features={"observation.environment_state": PolicyFeature(FeatureType.ENV, (14,))},
+        norm_map={FeatureType.ENV: NormalizationMode.MEAN_STD},
+        stats=stats,
+    )
+    PolicyProcessorPipeline(name=name, steps=[first, unrelated]).save_pretrained(
+        checkpoint, config_filename="preprocessor_config.json"
+    )
+    raw = run_preflight(checkpoint)
+    expected = [
+        finding.to_dict()
+        for finding in raw.findings
+        if finding.check_id == "FEATURE_CONTRACT"
+        and finding.status is DiagnosticStatus.FAIL
+        and finding.details.get("feature_key") == "observation.environment_state"
+    ]
+    assert len(expected) == 1
+
+    report = run_checks(checkpoint)
+
+    actual = [
+        finding.to_dict()
+        for finding in report.findings
+        if finding.check_id == "FEATURE_CONTRACT"
+        and finding.status is DiagnosticStatus.FAIL
+        and finding.details.get("feature_key") == "observation.environment_state"
+    ]
+    assert actual == expected
+    assert (
+        len([finding for finding in report.findings if finding.check_id == "UNBOUND_BASE_MODEL_STATS"]) == 1
+    )
+    assert report.has_failures()
+
+
+def test_distinct_stat_paths_with_same_basename_keep_all_missing_buffers(tmp_path: Path) -> None:
+    checkpoint = _base_model_checkpoint(tmp_path)
+    for role, filename in (("pre", "preprocessor_config.json"), ("post", "postprocessor_config.json")):
+        path = checkpoint / filename
+        config = json.loads(path.read_text(encoding="utf-8"))
+        old = checkpoint / config["steps"][0]["state_file"]
+        target = checkpoint / role / "normalization.safetensors"
+        target.parent.mkdir()
+        old.rename(target)
+        config["steps"][0]["state_file"] = target.relative_to(checkpoint).as_posix()
+        path.write_text(json.dumps(config), encoding="utf-8")
+    raw_missing = [
+        finding
+        for finding in run_preflight(checkpoint).findings
+        if finding.check_id == "FEATURE_CONTRACT"
+        and finding.summary.startswith("Required normalization buffer ")
+    ]
+
+    report = run_checks(checkpoint)
+
+    (base,) = [finding for finding in report.findings if finding.check_id == "UNBOUND_BASE_MODEL_STATS"]
+    assert len(base.details["missing_buffers"]) == len(raw_missing) == 6
+    assert {entry["processor_file"] for entry in base.details["missing_buffers"]} == {
+        "pre/normalization.safetensors",
+        "post/normalization.safetensors",
+    }
+    assert "6 required buffers missing across 2 processor files" in base.summary
+    expected = [finding.to_dict() for finding in raw_missing]
+    actual = [
+        finding for finding in base.details["folded_findings"] if finding["check_id"] == "FEATURE_CONTRACT"
+    ]
+    assert sorted(expected, key=str) == sorted(actual, key=str)
+    assert report.has_failures()
+
+
+def test_inline_normalizers_in_same_file_keep_distinct_step_evidence(tmp_path: Path) -> None:
+    checkpoint = _base_model_checkpoint(tmp_path)
+    path = checkpoint / "preprocessor_config.json"
+    config = json.loads(path.read_text(encoding="utf-8"))
+    step = config["steps"][0]
+    tensors = load_file(checkpoint / step.pop("state_file"))
+    stats: dict[str, dict[str, object]] = {}
+    for key, value in tensors.items():
+        feature, _, stat = key.rpartition(".")
+        stats.setdefault(feature, {})[stat] = value.tolist()
+    step["config"]["stats"] = stats
+    config["steps"].append(deepcopy(step))
+    path.write_text(json.dumps(config), encoding="utf-8")
+    raw_missing = [
+        finding
+        for finding in run_preflight(checkpoint).findings
+        if finding.check_id == "FEATURE_CONTRACT"
+        and finding.summary.startswith("Required normalization buffer ")
+    ]
+
+    report = run_checks(checkpoint)
+
+    (base,) = [finding for finding in report.findings if finding.check_id == "UNBOUND_BASE_MODEL_STATS"]
+    missing = base.details["missing_buffers"]
+    assert len(missing) == len(raw_missing) == 10
+    assert (
+        len({(entry["processor_file"], entry["step_index"], entry["tensor_key"]) for entry in missing}) == 10
+    )
+    inline = [entry for entry in missing if entry["processor_file"] == "preprocessor_config.json"]
+    assert len(inline) == 8 and {entry["step_index"] for entry in inline} == {0, 1}
+    assert "10 required buffers missing across 2 processor files" in base.summary
+    assert report.has_failures()
+
+
+@pytest.mark.parametrize("strict", [False, True])
+@pytest.mark.parametrize("compare_baseline", [False, True])
+def test_folding_preserves_strict_and_required_baseline_gate_findings(
+    tmp_path: Path, strict: bool, compare_baseline: bool
+) -> None:
+    checkpoint = _base_model_checkpoint(tmp_path)
+    baseline_findings = run_privilege_delta(checkpoint, checkpoint) if compare_baseline else []
+
+    report = run_checks(checkpoint, strict=strict, baseline=checkpoint if compare_baseline else None)
+
+    required = {
+        (finding.check_id, finding.status)
+        for finding in baseline_findings
+        if finding.details.get("required_coverage")
+    }
+    retained = {
+        (finding.check_id, finding.status)
+        for finding in report.findings
+        if finding.details.get("required_coverage")
+    }
+    assert required <= retained
+    assert report.strict is strict and report.baseline_requested is compare_baseline
+    assert report.has_failures()
+
+
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        (None, "unknown error"),
+        ("", "unknown error"),
+        (" \n\t ", "unknown error"),
+        ("cause\nhelp text", "cause"),
+        ("\n cause \n\nhelp text", "cause "),
+    ],
+)
+def test_first_error_line_handles_empty_and_whitespace_messages(message: object, expected: str) -> None:
+    assert _first_line(message) == expected
 
 
 @pytest.mark.parametrize(
