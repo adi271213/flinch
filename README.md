@@ -82,6 +82,14 @@ Saved `config.json` delta indices can establish chronology without a sidecar: `o
 
 The sample archive should contain numeric arrays under the checkpoint's exact keys, such as `observation.state`, with the exact declared trailing feature shape and optional leading batch/time dimensions. A `(1,1)` state cannot broadcast into a declared 14-coordinate feature: it fails `INVALID_SAMPLE_SHAPE` before step 0. Include `action` in the same archive, or in an adjacent `sample_action.npz`, to exercise postprocessing. Without a sample action, postprocessor trace coverage is `UNKNOWN`. For numeric VLA traces, the inspected language tokenizer is replaced in memory with LeRobot's native identity step; `OFFLINE_LANGUAGE_TOKENIZATION` is **UNKNOWN/INFO** because only numeric state/action subpaths are traced. Language tokenization and token-consuming downstream behavior remain unverified; declared downstream token consumers are blocked. Native numeric steps retain their original indices, and no tokenizer assets are fetched. Non-finite input samples are reported as `INVALID_SAMPLE_INPUT` before step 0.
 
+## Cross-platform release checks
+
+The [GitHub Actions workflow](.github/workflows/ci.yml) tests Python 3.12 on native Linux, macOS and Windows runners, with separate wheel and sdist jobs. One isolated build produces the exact artifacts used by all six jobs. Each job creates a new virtualenv, resolves the declared dependencies, checks the installed CLI before adding pytest, and runs the full test suite from the source archive against the installed package. No reference checkout or `PYTHONPATH` is used for the installed CLI checks.
+
+Linux and Windows jobs request CPU PyTorch wheels from PyTorch's official index; no GPU is required. Jobs retain diagnostic JSON, exact commands, stdout/stderr, pip reports and JUnit results even when a check fails. The runner deliberately uses temporary paths containing spaces. See [Actions runs](https://github.com/adi271213/lerobot-preflight/actions) for actual platform results; adding the matrix alone is not evidence that every platform passes.
+
+The same checks can be run with [scripts/ci_release_check.py](scripts/ci_release_check.py). Supply `--distribution wheel` or `sdist`, `--dist-dir`, an empty `--work-dir` outside this checkout, and `--results-dir`. Dependency installation may use the network; processor diagnostics run with Hub offline flags and use locally generated native processor fixtures.
+
 ## Ecosystem & Related Tools
 
 The [executed 14-case comparison](precision_hub_audit/head_to_head/head_to_head_report.md) records the pinned competitor versions, input adaptations, shared coverage and limitations. Basic zero/NaN-stat checks and baseline drift gates already exist elsewhere; this tool adds native numerical diagnosis and chronology checking.

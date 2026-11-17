@@ -1123,7 +1123,7 @@ def test_write_hub_reports_exports_strict_json_and_repository_links(tmp_path: Pa
     assert markdown_path.name == "hub_audit_report.md"
     assert json_path.is_file() and markdown_path.is_file()
     parsed = json.loads(json_path.read_text(), parse_constant=lambda value: pytest.fail(value))
-    assert parsed == hub_scanner._portable_report(report)
+    assert parsed == hub_scanner._portable_report(report, report_dir=tmp_path / "reports")
     markdown = markdown_path.read_text()
     assert "PATHOLOGICAL_STD_GAIN" in markdown
     assert "[org/lowstd](https://huggingface.co/org/lowstd)" in markdown
@@ -1210,6 +1210,71 @@ def test_portable_cached_report_preserves_pins_coverage_and_can_rescan(
     rescanned = scan_hub(cached_reports=[json_path])
     assert rescanned["summary"]["issues"]["PATHOLOGICAL_STD_GAIN"] == ["org/lowstd", "org/lowstd-clone"]
     assert rescanned["selection"]["original_discovery"]["candidate_count"] == 724
+
+
+@pytest.mark.parametrize("fixture,classification", [
+    ("bug_5289_pathological_gain", "MODERN_POLICY"),
+    ("legacy_act_embedded", "LEGACY_POLICY"),
+])
+def test_external_home_snapshot_report_can_move_and_rescan_without_path_leaks(
+    checkpoints, tmp_path, monkeypatch, fixture, classification,
+):
+    # This home-shaped path triggers the same redaction as Windows' native
+    # C:/Users/runneradmin/AppData/Local/Temp even when the test host is POSIX.
+    home = tmp_path / "Users" / "runneradmin" / "AppData" / "Local" / "Temp" / "audit-bundle"
+    snapshot = home / "snapshot"
+    checkpoint = snapshot / "pretrained_model"
+    shutil.copytree(checkpoints[fixture], checkpoint)
+    repo_id = "org/external-home"
+    manifest = {"repo_id": repo_id, "revision": "e" * 40, "snapshot_dir": str(snapshot),
+                "checkpoint_dir": str(checkpoint), "errors": [],
+                "downloaded_files": _repo_files(checkpoint), "critical_download_errors": False}
+    result = hub_scanner._audit_snapshot(manifest, 1e-4)
+    assert result["classification"] == classification
+    report = hub_scanner._report([result], {"mode": "cached", "network_used": False})
+    path, markdown = write_hub_reports(report, home / "reports")
+    exported = json.loads(path.read_text(encoding="utf-8"))
+    location = exported["repos"][0]
+    assert location["snapshot_dir"] == "../snapshot"
+    assert location["checkpoint_dir"] == "../snapshot/pretrained_model"
+    assert location["snapshot_path_base"] == location["checkpoint_path_base"] == "report_directory"
+    text = path.read_text(encoding="utf-8") + markdown.read_text(encoding="utf-8")
+    assert str(home) not in text and "/Users/runneradmin/" not in text and "\\Users\\runneradmin\\" not in text
+    assert report["repos"][0]["checkpoint_dir"] == str(checkpoint), "Export mutated the live manifest"
+
+    def forbid_network(*args, **kwargs):
+        pytest.fail("portable cached rescan attempted network access")
+
+    for name in ("HfApi", "hf_hub_download", "urlopen"):
+        monkeypatch.setattr(hub_scanner, name, forbid_network)
+    # The relative layout, rather than the old username or current working
+    # directory, must determine the locations after moving the report bundle.
+    moved = tmp_path / "moved-audit-bundle"
+    shutil.move(home, moved)
+    unrelated = tmp_path / "unrelated-cwd"
+    unrelated.mkdir()
+    monkeypatch.chdir(unrelated)
+    rescanned = scan_hub(cached_reports=[moved / "reports" / path.name])
+    assert rescanned["repos"][0]["classification"] == classification
+    assert Path(rescanned["repos"][0]["snapshot_dir"]) == moved / "snapshot"
+    assert Path(rescanned["repos"][0]["checkpoint_dir"]) == moved / "snapshot" / "pretrained_model"
+    if fixture == "bug_5289_pathological_gain":
+        assert rescanned["summary"]["issues"]["PATHOLOGICAL_STD_GAIN"] == [repo_id]
+        failure = next(f for f in rescanned["repos"][0]["findings"]
+                       if f["check_id"] == "PATHOLOGICAL_STD_GAIN" and f["status"] == "FAIL")
+        assert failure["provenance"]["violating_indices"] == [9]
+
+
+def test_windows_external_snapshot_locator_is_relative_to_the_report_directory():
+    project = PureWindowsPath("D:/a/checkout/preflight")
+    home = PureWindowsPath("C:/Users/runneradmin/AppData/Local/Temp/audit")
+    location, base = hub_scanner._snapshot_report_location(home / "snapshot", project, home / "reports")
+    assert location == "../snapshot" and base == "report_directory"
+    assert "Users" not in location and "runneradmin" not in location
+    assert hub_scanner._snapshot_report_location(project / ".hub_audit_snapshots/org-lowstd", project,
+                                               home / "reports") == (".hub_audit_snapshots/org-lowstd", "project")
+    with pytest.raises(ValueError, match="same filesystem drive"):
+        hub_scanner._snapshot_report_location(home / "snapshot", project, PureWindowsPath("E:/reports"))
 
 
 @pytest.mark.parametrize("checkpoint", [

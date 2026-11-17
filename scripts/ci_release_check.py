@@ -12,18 +12,20 @@ import hashlib
 import json
 import os
 from pathlib import Path
+from pathlib import PurePosixPath
 import platform
 import subprocess
 import sys
 import tarfile
 import time
 import venv
+import zipfile
 
 
 _ORIGINS = r'''
 from pathlib import Path
 import importlib.metadata as metadata
-import json, os, site, sys
+import hashlib, json, os, site, sys
 import lerobot, lerobot_preflight, torch
 from lerobot.processor import NormalizerProcessorStep, PolicyProcessorPipeline
 prefix, checkout = Path(sys.prefix).resolve(), Path(sys.argv[1]).resolve()
@@ -34,7 +36,18 @@ assert "PYTHONPATH" not in os.environ
 assert all(Path(path).resolve().is_relative_to(prefix) for path in origins.values())
 assert not any(".lerobot_ref" in path or Path(path).resolve().is_relative_to(checkout) for path in sys.path)
 assert not any("__editable__" in repr(finder) for finder in sys.meta_path)
+expected_runtime = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+package = Path(lerobot_preflight.__file__).resolve().parent
+actual_runtime = {path.relative_to(package).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+                  for path in package.rglob("*.py") if path.is_file()}
+assert expected_runtime and "__init__.py" in expected_runtime, "Artifact contains no Python runtime package"
+mismatches = {name: {"expected": expected_runtime.get(name), "installed": actual_runtime.get(name)}
+              for name in sorted(set(expected_runtime) | set(actual_runtime))
+              if expected_runtime.get(name) != actual_runtime.get(name)}
+assert not mismatches, "Installed runtime bytes differ from the exact input artifact: " + json.dumps(mismatches)
 print(json.dumps({"prefix": sys.prefix, "python": sys.version, "origins": origins, "sys_path": sys.path,
+                  "runtime_module_count": len(actual_runtime), "runtime_module_hashes": actual_runtime,
+                  "installed_runtime_matches_input_artifact": True,
                   "versions": {name: metadata.version(name) for name in
                     ("lerobot-preflight", "lerobot", "torch", "numpy", "huggingface-hub", "safetensors")}}, indent=2))
 '''
@@ -138,6 +151,40 @@ def _hash(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _runtime_hashes(artifact: Path) -> dict[str, str]:
+    """Read package source bytes from the chosen archive without importing it."""
+    hashes: dict[str, str] = {}
+
+    def add(relative: tuple[str, ...], data: bytes) -> None:
+        if not relative or any(part in (".", "..") or "\\" in part for part in relative):
+            raise ValueError("Unsafe Python module path in release artifact")
+        name = "/".join(relative)
+        if name in hashes:
+            raise ValueError(f"Duplicate Python module in release artifact: {name}")
+        hashes[name] = hashlib.sha256(data).hexdigest()
+
+    if artifact.suffix == ".whl":
+        with zipfile.ZipFile(artifact) as archive:
+            for member in archive.infolist():
+                parts = PurePosixPath(member.filename).parts
+                if len(parts) >= 2 and parts[0] == "lerobot_preflight" and member.filename.endswith(".py"):
+                    add(parts[1:], archive.read(member))
+    else:
+        with tarfile.open(artifact) as archive:
+            for member in archive:
+                parts = PurePosixPath(member.name).parts
+                if (member.isfile() and len(parts) >= 4 and parts[1:3] == ("src", "lerobot_preflight")
+                        and member.name.endswith(".py")):
+                    stream = archive.extractfile(member)
+                    if stream is None:
+                        raise ValueError(f"Cannot read Python module from source artifact: {member.name}")
+                    with stream:
+                        add(parts[3:], stream.read())
+    if "__init__.py" not in hashes:
+        raise ValueError("Release artifact contains no lerobot_preflight Python package")
+    return hashes
+
+
 def _environment(work: Path, *, offline: bool) -> dict[str, str]:
     environment = {key: value for key, value in os.environ.items()
                    if key not in {"PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV", "PYTHONUSERBASE", "PYTHONUTF8"}
@@ -236,6 +283,10 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError("dist directory must contain exactly one wheel and one sdist")
         artifact, source_archive = (wheels[0] if args.distribution == "wheel" else sdists[0]), sdists[0]
         summary["artifacts"] = {path.name: _hash(path) for path in (wheels[0], source_archive)}
+        expected_runtime = _runtime_hashes(artifact)
+        runtime_manifest = results / "expected-runtime-hashes.json"
+        runtime_manifest.write_text(json.dumps(expected_runtime, indent=2) + "\n", encoding="utf-8")
+        summary["expected_runtime_module_hashes"] = expected_runtime
         manifest_path = dist / "artifact_hashes.json"
         if manifest_path.is_file():
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -257,7 +308,7 @@ def main(argv: list[str] | None = None) -> int:
         elif not python.is_file() or summary.get("installed_artifact_sha256") != _hash(artifact):
             raise ValueError("A successful install phase of this exact artifact is required first")
         if args.phase in ("all", "smoke"):
-            origins_ok = run("import_origins", [python, "-I", "-c", _ORIGINS, checkout])
+            origins_ok = run("import_origins", [python, "-I", "-c", _ORIGINS, checkout, runtime_manifest])
             run("pip_check", [python, "-m", "pip", "check"])
             run("version", [console, "--version"])
             run("help", [console, "--help"])

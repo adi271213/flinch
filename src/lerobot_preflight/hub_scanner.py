@@ -7,11 +7,13 @@ import hashlib
 import html
 import json
 import math
+import ntpath
+import posixpath
 import re
 import tempfile
 from collections.abc import Callable, Iterable
 from datetime import datetime, timezone
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
 from typing import Any
 from urllib.request import Request, urlopen
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -987,11 +989,20 @@ def rescan_cached_reports(
                 continue
             seen.add(identity)
             manifest = {key: value for key, value in repo.items() if key not in ("findings", "classification", "classification_evidence")}
-            # Exported snapshot paths are relative to the project, independent of cwd.
+            # Older reports use project-relative paths. External snapshots in
+            # newer reports are relative to the report itself, never redacted
+            # display strings or the caller's current working directory.
             for field in ("snapshot_dir", "checkpoint_dir"):
                 cached = Path(manifest[field])
                 if not cached.is_absolute():
-                    manifest[field] = str((Path(__file__).resolve().parents[2] / cached).resolve())
+                    base_kind = manifest.get(field.removesuffix("_dir") + "_path_base", "project")
+                    if base_kind == "report_directory":
+                        base = path.resolve().parent
+                    elif base_kind == "project":
+                        base = Path(__file__).resolve().parents[2]
+                    else:
+                        raise ValueError(f"Unsupported cached {field} path base: {base_kind}")
+                    manifest[field] = str((base / cached).resolve())
             manifest.update({"snapshot_reused": True, "source_report": str(path.resolve()),
                              "source_report_generated_at_utc": document.get("generated_at_utc"),
                              "cached_artifact_bytes": repo.get("cached_artifact_bytes", repo.get("artifact_bytes_downloaded", 0)),
@@ -1144,8 +1155,26 @@ def scan_hub(
     return _report(results, selection)
 
 
-def _portable_report(report: dict[str, Any]) -> dict[str, Any]:
-    """Export project-relative evidence without mutating live local manifests."""
+def _snapshot_report_location(snapshot: PurePath, project: PurePath,
+                              report_dir: PurePath) -> tuple[str, str]:
+    """Give operational snapshot paths an explicit, portable resolution base."""
+    try:
+        return snapshot.relative_to(project).as_posix(), "project"
+    except ValueError:
+        pass
+    windows = isinstance(snapshot, PureWindowsPath)
+    path_module = ntpath if windows else posixpath
+    path_type = PureWindowsPath if windows else PurePosixPath
+    try:
+        relative = path_module.relpath(str(snapshot), str(report_dir))
+    except ValueError as exc:
+        raise ValueError("Cannot export a cached snapshot location relative to the report directory; "
+                         "place the report and external snapshot on the same filesystem drive.") from exc
+    return path_type(relative).as_posix(), "report_directory"
+
+
+def _portable_report(report: dict[str, Any], *, report_dir: Path | None = None) -> dict[str, Any]:
+    """Export private display evidence and recoverable local snapshot locations."""
     project = Path(__file__).resolve().parents[2]
     # Serialized evidence paths use their host's separators. Match a complete
     # project component with either spelling, then emit project-relative POSIX
@@ -1172,8 +1201,24 @@ def _portable_report(report: dict[str, Any]) -> dict[str, Any]:
         return value
 
     exported = convert(report)
-    for repo in exported.get("repos", []):
+    for original, repo in zip(report.get("repos", []), exported.get("repos", []), strict=True):
         repo["checkpoint_id"] = f"{repo['repo_id']}@{repo.get('revision') or 'unavailable'}"
+        if report_dir is None:
+            continue
+        for field in ("snapshot_dir", "checkpoint_dir"):
+            original_path = original.get(field)
+            if not isinstance(original_path, str) or not Path(original_path).is_absolute():
+                continue
+            # Generic home-path redaction is appropriate for displayed errors
+            # and provenance, but must never destroy a cached snapshot locator.
+            location, base_kind = _snapshot_report_location(
+                Path(original_path).resolve(), project, Path(report_dir).resolve())
+            repo[field] = location
+            base_field = field.removesuffix("_dir") + "_path_base"
+            if base_kind == "project":
+                repo.pop(base_field, None)  # Preserve the legacy project-relative contract.
+            else:
+                repo[base_field] = base_kind
     return exported
 
 
@@ -1319,8 +1364,8 @@ def write_hub_reports(report: dict[str, Any], output_dir: Path, report_name: str
     """Write strict JSON and a portable Markdown summary with pinned repo links."""
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", report_name):
         raise ValueError("report_name must be a plain filename stem")
-    report = _portable_report(report)
     output = Path(output_dir)
+    report = _portable_report(report, report_dir=output)
     output.mkdir(parents=True, exist_ok=True)
     json_path, markdown_path = output / f"{report_name}.json", output / f"{report_name}.md"
     json_path.write_text(json.dumps(report, indent=2, ensure_ascii=False, allow_nan=False) + "\n", encoding="utf-8")
