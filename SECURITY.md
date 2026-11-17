@@ -1,23 +1,31 @@
 # Security
 
-## Scope and trust boundary
+## What Flinch does and doesn't touch
 
-Flinch inspects checkpoint artifacts and executes inspected native data processors on CPU. It does not run a neural policy, simulator, or motor controller. A passing report is not a hardware-safety certification or a guarantee about a checkpoint's neural weights.
+Flinch reads checkpoint files and runs LeRobot's data processors on your CPU. It never runs the neural network, a simulator or a motor. A clean report means the processor files look right. It doesn't mean the robot is safe or that the model weights are what you expect.
 
-Native processor construction is limited to inspected classes. Numeric VLA tracing does not construct the language tokenizer. NPZ samples are loaded with pickle disabled, and tensor buffers use safetensors. Missing support remains explicit `UNKNOWN` coverage.
+Some protections are built in:
 
-Checkpoint paths referenced by processor JSON must remain within the checkpoint directory. Caller-selected samples and metadata sidecars may be external. Output exporters reject unrelated existing artifacts and symlink destinations. These protections are not a sandbox against concurrent filesystem changes: use a stable checkpoint copy when auditing untrusted or changing input. Large local inputs may still consume CPU or memory.
+- Flinch only builds processor steps it knows and has inspected. It never imports code from a checkpoint.
+- `.npz` samples are loaded with pickle turned off, and tensors are read with `safetensors`.
+- File paths inside a checkpoint can't escape the checkpoint folder. `../` and symlinks pointing outside are rejected.
+- `--report` and `--graph` won't overwrite a file that isn't an earlier Flinch output, and won't write through a symlink.
+- With `hf://`, Flinch only downloads public, ungated repos, pinned to an exact commit. It enforces size limits on every file and never downloads model weights. It doesn't need or send a Hugging Face token.
 
-The Hub downloader is the network-enabled component, used by `scripts/scan_hub.py` and by `--policy`/`--baseline hf://owner/name`. It fetches public repositories at pinned revisions and enforces header, file, snapshot, and tensor-range byte limits. Local checks and traces do not require Hub credentials. Do not place access tokens in sample files, processor JSON, command-line arguments, or committed environment files.
+Flinch isn't a sandbox, though. If you're checking a checkpoint you don't trust, or one that might change while you check it, copy it somewhere stable first. A very large local file can still use a lot of memory.
 
-Reports may contain tensor slices, dataset names, checkpoint paths, and caller-supplied metadata. Review them before sharing, particularly when using private checkpoints. Hub report path redaction does not guarantee that arbitrary input text contains no personal or confidential information.
+Reports can include file paths, dataset names and slices of the stats. Look them over before you share a report from a private checkpoint.
 
 ## Reporting a vulnerability
 
-Use [GitHub private vulnerability reporting](https://github.com/adi271213/flinch/security/advisories/new) if the repository offers it. If that channel is unavailable, open an issue requesting a private contact channel without exploit details or sensitive artifacts. Private reporting availability is controlled by the repository owner; it has not been verified as enabled.
+Please use [GitHub's private vulnerability reporting](https://github.com/adi271213/flinch/security/advisories/new). If that isn't available, open an issue asking for a private contact, without any exploit details.
 
-Include the package and LeRobot versions, platform, affected check or exporter, and a minimal synthetic reproduction when possible. Do not post tokens, private model data, or personal paths in a public issue. No response-time or security-support SLA is currently offered for this prerelease.
+It helps to include:
 
-## Dependency checks
+- your Flinch and LeRobot versions and OS;
+- which check or option is affected;
+- a small made-up checkpoint that reproduces the problem, if you can.
 
-The release workflow resolves dependencies in clean environments and runs `pip check` plus regression tests. This verifies installation consistency, not the absence of published vulnerabilities. Dependency audit results apply to exact resolved versions and advisory data available at audit time; they are not a permanent guarantee about all versions allowed by package metadata.
+Don't post tokens, private model files or personal paths in a public issue.
+
+This is a small project maintained in spare time, so I can't promise a response time, but security reports get looked at first.
