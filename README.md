@@ -12,7 +12,7 @@
 
 </div>
 
-A LeRobot checkpoint can load without a single warning and still be broken. If a saved standard deviation is nearly zero, LeRobot divides by it (plus a tiny `eps`), and a normal sensor reading turns into a huge number. The policy sees garbage, and the robot jerks. It flinches.
+A LeRobot checkpoint can load without a single warning and still have broken input conditioning. When an active normalization mode divides by a nearly zero standard deviation (plus a tiny `eps`), a small sensor perturbation can become a huge policy input. That is a numerical risk; it does not establish how a robot will move.
 
 Flinch looks for that before anything moves. It reads the checkpoint's processor files, runs LeRobot's own processor code on a few test inputs on your CPU, and tells you exactly which step, key and coordinate is wrong.
 
@@ -20,14 +20,14 @@ Flinch looks for that before anything moves. It reads the checkpoint's processor
 
 I pointed it at 100 public LeRobot checkpoints. Some of what turned up:
 
-| Checkpoint | Problem | What it does to a +0.20 input |
+| Checkpoint | Problem | Result of a synthetic +0.20 perturbation |
 | --- | --- | --- |
 | `jhseon-holiday/vqbet_xarm_holi_test` | `observation.state` std is 6.7e-6 at index 4 | becomes ~29,971 (149,857× gain) |
 | `HaomingSong/lerobot-pi0-bridge` | `observation.state` std is exactly 0 at index 6 | becomes ~20,000,000 |
 | `iantc104/Diffusion-RPL-UR5-PegInsert-v0` | min equals max for 7 environment-state coordinates | becomes ~40,000,000 |
 | `y1y2y3/smolvla_base1` | a 129-byte Git LFS pointer was saved instead of the stats tensor | the stats are simply missing |
 
-Every row is pinned to an exact commit. The full write-up is in [docs/audit-evidence.md](docs/audit-evidence.md). These are problems in the files; I didn't run any of these on a real robot.
+The numerical probes are offsets from the saved mean or lower bound, using the inspected float32 formulas, saved normalization mode and `eps=1e-8`. Every row is pinned to an exact commit. The full write-up is in [docs/audit-evidence.md](docs/audit-evidence.md). These are artifact findings and numerical risks; I didn't run any of these on a real robot.
 
 ## 🚀 Quick start
 
@@ -93,7 +93,7 @@ Every finding gets one of four labels:
 | `CONFLICT` | Two files in the checkpoint disagree with each other. |
 | `UNKNOWN` | Flinch couldn't check this, so it won't pretend it did. |
 
-Exit code is `1` if anything is `FAIL` or `CONFLICT`, and `0` otherwise, so it drops straight into CI. `--strict` also fails on gaps in what could be checked and on warnings. Bad arguments exit `2`.
+Exit code is `1` for `FAIL` or `CONFLICT`. With `--baseline`, missing required comparison coverage also exits `1`. `--strict` additionally rejects warnings and non-exempt coverage `UNKNOWN`s. Informational physical-semantics `UNKNOWN`s explicitly marked as exempt remain nonblocking. Otherwise the exit code is `0`; bad arguments exit `2`.
 
 Flinch never guesses physical units. A tensor's shape can't tell you whether a joint is in radians or degrees, so that stays `UNKNOWN` unless you declare it with `--metadata`.
 
@@ -104,7 +104,7 @@ Flinch never guesses physical units. A tensor's shape can't tell you whether a j
 - **Precision:** values that overflow when the checkpoint runs in float16.
 - **Base models:** checkpoints like `lerobot/smolvla_base` that need your dataset's stats before they can run. You get one clear message telling you to fine-tune or bind stats, instead of a wall of errors.
 - **Relative actions on stacked observations:** LeRobot's relative-action step treats the first frame of a stacked observation as "now". That's right for the built-in policies, but a custom pipeline that puts the oldest frame first would be anchored to the wrong frame. Flinch checks the saved frame order.
-- **Changes between checkpoints:** with `--baseline`, any change to how inputs and actions are scaled, shifted or clipped, and to how many actions are executed per step.
+- **Changes between checkpoints:** with `--baseline`, significant changes to input/action scaling, offsets or clipping under the configured thresholds, and increases in open-loop execution steps. Missing required comparison evidence blocks the gate.
 - **Broken files:** Git LFS pointers saved in place of real data, and old-format checkpoints that need migrating.
 
 ## ⚙️ How it works
@@ -126,7 +126,7 @@ flowchart LR
   ckpt --> lineage[Pipeline diagram]
 ```
 
-Flinch doesn't reimplement LeRobot. It loads the checkpoint with LeRobot's own `PolicyProcessorPipeline` and watches each step with LeRobot's hooks, so what it reports is what your robot would actually get. It never runs the neural network, a simulator or a motor, and it doesn't touch the network while checking. If a checkpoint uses a custom processor that Flinch can't inspect, it says `UNKNOWN` rather than importing unknown code.
+Flinch uses LeRobot's own `PolicyProcessorPipeline` and hooks for offline CPU probes, alongside direct inspection of serialized configs and buffers. Results describe those inspected inputs and arithmetic, not a hardware deployment. It never runs the neural network, a simulator or a motor, and it doesn't touch the network while checking. If a checkpoint uses a custom processor that Flinch can't inspect, it says `UNKNOWN` rather than importing unknown code.
 
 <details>
 <summary>Code layout</summary>
@@ -160,7 +160,7 @@ scripts/              Hub scanner and release checks
 | `--graph` | Write the processor pipeline as `.json`, `.mmd` or `.md`. |
 | `--metadata` | JSON file declaring units, frames or frame order, e.g. `{"temporal_observation_ordering": "oldest_first", "current_index": -1}`. |
 | `--std-threshold` | How small a std counts as suspicious. Default `1e-4`. |
-| `--strict` | Also fail on anything that couldn't be checked, and on warnings. |
+| `--strict` | Fail on non-exempt coverage `UNKNOWN`s and warnings; informational physical unknowns remain exempt. |
 | `--version` | Print the version. |
 
 Set `HF_HUB_OFFLINE=1` to stop any Hub downloads.
@@ -186,7 +186,7 @@ It downloads only small files and byte ranges, never full model weights, and pin
 | [robotruth](https://github.com/mulkakhileshmj/robotruth) | Compares a checkpoint against a baseline or benchmark, including model weight hashes, which Flinch doesn't check. |
 | [Tether](https://pypi.org/project/fastcrest-tether/) | Deploys policies to edge hardware through ONNX, with some overlap on zero or NaN action stats. |
 
-Flinch is the one that runs LeRobot's own processors to find stats that are technically valid but explode at runtime.
+Flinch focuses on reference-free numerical diagnosis with LeRobot's own processors, without requiring a trusted baseline or ONNX export. Basic invalid-stat checks and baseline drift coverage overlap with other tools.
 
 ## ⚠️ Limits
 
@@ -204,7 +204,7 @@ python -m ruff check src scripts tests && python -m ruff format --check src scri
 python -m mypy
 ```
 
-The tests build real LeRobot checkpoints that reproduce four known bug types: silently skipped normalization (#4415), near-zero std (#5289), float16 NaN (#4973) and wrong relative-action frames (#5315). Each comes with a healthy twin that must pass. CI installs the built package fresh on Linux, macOS and Windows and runs the whole suite there.
+The tests build real LeRobot checkpoints for silently skipped normalization (#4415), near-zero std (#5289), float16 NaN (#4973), and the cross-policy chronology contract associated with #5315. The chronology fixture deliberately pairs an oldest-first custom history with index-zero anchoring; it does not reproduce a bug in current in-tree policies. Each case comes with a healthy control that must pass. CI installs the built package fresh on Linux, macOS and Windows and runs the whole suite there.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) to contribute and [SECURITY.md](SECURITY.md) to report a security issue.
 
