@@ -6,6 +6,21 @@ __pycache__/
 *.egg-info/
 .hub_audit_snapshots/
 
-dist/
+# Local environments, build products and quality-tool caches.
+venv/
+.venv-*/
+.env
+.env.*
+!.env.example
 build/
+dist/
 ci-results/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.DS_Store
+Thumbs.db
+tests/fixtures/generated/

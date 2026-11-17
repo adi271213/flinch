@@ -11,8 +11,6 @@ import argparse
 import hashlib
 import json
 import os
-from pathlib import Path
-from pathlib import PurePosixPath
 import platform
 import subprocess
 import sys
@@ -20,7 +18,7 @@ import tarfile
 import time
 import venv
 import zipfile
-
+from pathlib import Path, PurePosixPath
 
 _ORIGINS = r'''
 from pathlib import Path

@@ -7,13 +7,18 @@ import shutil
 import socket
 
 import pytest
-import torch
 from lerobot.configs import FeatureType, NormalizationMode, PolicyFeature
-from lerobot.processor import (AbsoluteActionsProcessorStep, DeviceProcessorStep, NormalizerProcessorStep,
-                               PolicyProcessorPipeline, RelativeActionsProcessorStep, UnnormalizerProcessorStep)
+from lerobot.processor import (
+    AbsoluteActionsProcessorStep,
+    DeviceProcessorStep,
+    NormalizerProcessorStep,
+    PolicyProcessorPipeline,
+    RelativeActionsProcessorStep,
+    UnnormalizerProcessorStep,
+)
 from safetensors.torch import load_file, save_file
 
-from lerobot_preflight.cli import main, run_doctor
+from lerobot_preflight.cli import main
 from lerobot_preflight.models import DiagnosticStatus
 from lerobot_preflight.preflight import run_preflight
 from lerobot_preflight.privilege_delta import run_privilege_delta

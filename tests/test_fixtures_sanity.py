@@ -8,8 +8,6 @@ from pathlib import Path
 import numpy as np
 import pytest
 import torch
-from safetensors.torch import load_file
-
 from lerobot.configs import FeatureType, NormalizationMode
 from lerobot.processor import (
     NormalizerProcessorStep,
@@ -17,6 +15,7 @@ from lerobot.processor import (
     RelativeActionsProcessorStep,
     UnnormalizerProcessorStep,
 )
+from safetensors.torch import load_file
 
 from tests.fixtures.make_bug_fixtures import make_bug_fixtures
 

@@ -11,7 +11,13 @@ from pathlib import Path
 import pytest
 import torch
 from lerobot.configs import FeatureType, NormalizationMode, PolicyFeature
-from lerobot.processor import DataProcessorPipeline, DeviceProcessorStep, NormalizerProcessorStep, PolicyProcessorPipeline, UnnormalizerProcessorStep
+from lerobot.processor import (
+    DataProcessorPipeline,
+    DeviceProcessorStep,
+    NormalizerProcessorStep,
+    PolicyProcessorPipeline,
+    UnnormalizerProcessorStep,
+)
 from safetensors.torch import load_file, save_file
 
 from lerobot_preflight.cli import main, run_doctor

@@ -15,16 +15,33 @@ from pathlib import Path
 from typing import Any
 
 import torch
-from safetensors import SafetensorError
 from lerobot.configs import FeatureType, NormalizationMode
-from lerobot.processor import (DeviceProcessorStep, NewLineTaskProcessorStep, NormalizerProcessorStep,
-                               ProcessorStepRegistry, RelativeActionsProcessorStep,
-                               RenameObservationsProcessorStep, TokenizerProcessorStep, UnnormalizerProcessorStep)
+from lerobot.processor import (
+    DeviceProcessorStep,
+    NewLineTaskProcessorStep,
+    NormalizerProcessorStep,
+    ProcessorStepRegistry,
+    RelativeActionsProcessorStep,
+    RenameObservationsProcessorStep,
+    TokenizerProcessorStep,
+    UnnormalizerProcessorStep,
+)
+from safetensors import SafetensorError
 
 from .models import _json_value
-from .preflight import (_MASKED_NORMALIZERS, _MODE_STATS, _legacy_declared_features,
-                        _local_file, _normalization_base, _normalizer_features,
-                        _read_tensors, _role, _step_class, _verified_legacy_values)
+from .preflight import (
+    _MASKED_NORMALIZERS,
+    _MODE_STATS,
+    _legacy_declared_features,
+    _local_file,
+    _normalization_base,
+    _normalizer_features,
+    _read_tensors,
+    _role,
+    _step_class,
+    _validate_step_entry,
+    _verified_legacy_values,
+)
 
 _FORMAT = "lerobot-preflight-processor-lineage-v1"
 _LEGACY_FORMAT = "lerobot-doctor-processor-lineage-v1"
@@ -184,8 +201,16 @@ def build_processor_graph(checkpoint_dir: Path, metadata_path: Path | None = Non
         active_dtype: str | None = None
         uncertain_flow = False
         for index, entry in enumerate(saved["steps"]):
-            if not isinstance(entry, dict) or not isinstance(entry.get("config", {}), dict):
-                errors.append({"file_path": path.name, "status": "UNKNOWN", "reason": f"Invalid step {index}"})
+            try:
+                _validate_step_entry(entry)
+            except ValueError as exc:
+                errors.append({"file_path": path.name, "status": "UNKNOWN",
+                               "reason": f"Invalid step {index}: {exc}"})
+                unknown_steps.append({"file_path": path.name, "step_index": index,
+                                      "class_name": "invalid_step_declaration"})
+                uncertain_flow = True
+                active_dtype = None
+                shapes = {key: {**value, "shape": None, "dtype": None} for key, value in shapes.items()}
                 continue
             entry_config = entry.get("config", {})
             cls = _step_class(entry)

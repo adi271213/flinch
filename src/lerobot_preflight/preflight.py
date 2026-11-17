@@ -298,7 +298,7 @@ def _screen_native_normalization_chain(
                 if key not in step.features or step.features[key].type != FeatureType(declaration["type"]):
                     step.features[key] = PolicyFeature(FeatureType(declaration["type"]), tuple(declaration["shape"]))
             normalizers[index] = step
-        except (OSError, ValueError, RuntimeError, KeyError, TypeError):
+        except (OSError, ValueError, RuntimeError, KeyError, TypeError, AttributeError):
             continue  # Existing static contract findings retain unavailable coverage.
     seeds: dict[str, tuple[int, Any]] = {}
     for index, step in normalizers.items():
@@ -395,7 +395,11 @@ def _screen_paired_relative_chain(root: Path, report: PreflightReport, threshold
     # Late import: privilege_delta uses this module's artifact readers. Neither
     # path imports or constructs a neural policy or a tokenizer.
     from .privilege_delta import (
-        _policy, _relative_action_mapping, _relative_native_probes, _static_pair, _step_provenance,
+        _policy,
+        _relative_action_mapping,
+        _relative_native_probes,
+        _static_pair,
+        _step_provenance,
     )
 
     try:
@@ -492,7 +496,10 @@ def _provenance(
     indices: list[int] | None = None,
 ) -> Provenance:
     digest = ""
-    if path.is_file():
+    # Validated checkpoint artifacts and explicit metadata reach here as resolved
+    # paths. Error provenance may retain a rejected link: never follow it to hash
+    # an unrelated file merely to describe that validation failure.
+    if not path.is_symlink() and path.is_file():
         with path.open("rb") as stream:
             digest = hashlib.file_digest(stream, "sha256").hexdigest()[:12]
     return Provenance(str(path), step_name, tensor_key, digest, indices)
@@ -534,9 +541,36 @@ def _read_tensors(path: Path) -> dict[str, torch.Tensor]:
         return {key: buffers.get_tensor(key) for key in buffers.keys()}
 
 
+def _validate_step_entry(entry: Any) -> None:
+    """Validate saved step structure before dispatching any native constructor.
+
+    Registry names take precedence over import paths, as in LeRobot's loader.
+    An unfamiliar string identifier is valid structure and remains uninspected.
+    """
+    if not isinstance(entry, dict):
+        raise ValueError("Processor steps must be JSON objects")
+    identifier = "registry_name" if "registry_name" in entry else "class"
+    if not isinstance(entry.get(identifier), str) or not entry[identifier].strip():
+        raise ValueError(f"Processor {identifier} must be a nonempty string")
+    if not isinstance(entry.get("config", {}), dict):
+        raise ValueError("Processor step config must be a JSON object")
+    if "state_file" in entry and (not isinstance(entry["state_file"], str) or not entry["state_file"]):
+        raise ValueError("Processor state_file must be a nonempty string")
+    artifacts = entry.get("artifacts", {})
+    if not isinstance(artifacts, dict) or any(
+        not isinstance(key, str) or not key or not isinstance(value, str) or not value
+        for key, value in artifacts.items()
+    ):
+        raise ValueError("Processor artifacts must map nonempty string keys to filenames")
+
+
 def _step_class(entry: dict[str, Any]) -> type | None:
     """Resolve only inspected native classes; never import checkpoint-specified code."""
+    if not isinstance(entry, dict):
+        return None
     if "registry_name" in entry:
+        if not isinstance(entry["registry_name"], str):
+            return None
         try:
             cls = ProcessorStepRegistry.get(entry["registry_name"])
         except KeyError:
@@ -552,6 +586,8 @@ def _normalization_base(entry: dict[str, Any]) -> type | None:
     Their native implementation inherits the corresponding LeRobot normalization
     step and only masks selected coordinates after the base transform.
     """
+    if not isinstance(entry, dict):
+        return None
     name = entry.get("registry_name")
     return _MASKED_NORMALIZERS.get(name) if isinstance(name, str) and name in _MASKED_NORMALIZERS else _step_class(entry)
 
@@ -712,17 +748,31 @@ def _model_weights_skipped(root: Path, report: PreflightReport) -> bool:
 
 def _discover(root: Path, report: PreflightReport) -> list[tuple[Path, dict[str, Any]]]:
     pipelines = []
+    invalid_files: set[str] = set()
     for path in sorted(root.glob("*.json")):
         try:
             path = _local_file(root, path.name)
             config = json.loads(path.read_text(encoding="utf-8"))
             if isinstance(config, dict) and isinstance(config.get("steps"), list):
-                pipelines.append((path, config))
+                valid = True
+                for index, entry in enumerate(config["steps"]):
+                    try:
+                        _validate_step_entry(entry)
+                    except ValueError as exc:
+                        valid = False
+                        invalid_files.add(str(path))
+                        _add(report, "SCHEMA_GENERATION", DiagnosticStatus.FAIL,
+                             f"Invalid processor step {index}: {exc}",
+                             {"step_index": index, "processor_file": path.name},
+                             _provenance(path, index))
+                if valid:
+                    pipelines.append((path, config))
             elif path.name in _CONFIG_NAMES:
                 raise ValueError("Expected native processor config with a steps list")
         except (OSError, ValueError) as exc:
             # An unrelated metadata file is not a processor schema failure.
             if path.name in _CONFIG_NAMES:
+                invalid_files.add(str(path))
                 try:
                     provenance = _provenance(_local_file(root, path.name))
                 except (OSError, ValueError):
@@ -785,9 +835,21 @@ def _discover(root: Path, report: PreflightReport) -> list[tuple[Path, dict[str,
     else:
         roles = {_role(path, config) for path, config in pipelines}
         missing = [role for role in ("pre", "post") if role not in roles] if roles - {None} else []
-        _add(report, "SCHEMA_GENERATION", DiagnosticStatus.FAIL if missing else DiagnosticStatus.PASS,
+        conflicts = []
+        for role in ("pre", "post"):
+            entries = [(path, config) for path, config in pipelines if _role(path, config) == role]
+            if entries and any(config != entries[0][1] for _, config in entries[1:]):
+                conflicts.append({"pipeline_role": role, "processor_files": [str(path) for path, _ in entries],
+                                  "sources": [_provenance(path).to_dict() for path, _ in entries]})
+        status = (DiagnosticStatus.CONFLICT if conflicts else DiagnosticStatus.FAIL if missing or invalid_files
+                  else DiagnosticStatus.PASS)
+        _add(report, "SCHEMA_GENERATION", status,
+             "Multiple processor JSONs for the same role disagree; no canonical pipeline was selected." if conflicts else
+             "Some processor JSONs contain invalid declarations." if invalid_files else
              "Modern processor config pair is incomplete." if missing else "Native processor JSONs found.",
              {"processor_files": [str(path) for path, _ in pipelines], "missing_roles": missing,
+              "invalid_processor_files": sorted(invalid_files),
+              "conflicting_roles": conflicts,
               "legacy_buffer_keys": legacy_keys,
               "legacy_evidence_source": legacy_details.get("evidence_source"),
               "legacy_digest_scope": legacy_details.get("digest_scope")})
@@ -1685,12 +1747,21 @@ def _physical_semantics(root: Path, report: PreflightReport, metadata_path: Path
     if explicit is not None and explicit not in paths:
         paths.append(explicit)
     for path in paths:
-        if not path.is_file():
+        if not path.is_file() and not path.is_symlink():
             if path == explicit:
                 _add(report, "PHYSICAL_SEMANTICS", DiagnosticStatus.FAIL,
                      "The explicitly selected metadata file does not exist.",
                      {"metadata_path": str(path), "required_coverage": True}, _provenance(path))
             continue
+        if path == root / "config.json":
+            try:
+                path = _local_file(root, "config.json")
+            except (OSError, ValueError) as exc:
+                _add(report, "PHYSICAL_SEMANTICS", DiagnosticStatus.FAIL,
+                     f"Policy metadata is unavailable within the checkpoint: {exc}",
+                     {"metadata_path": str(path), "required_coverage": True},
+                     Provenance(str(path), None, None, ""))
+                continue
         try:
             metadata = json.loads(path.read_text(encoding="utf-8"))
             if not isinstance(metadata, dict):
@@ -1854,15 +1925,20 @@ def run_preflight(checkpoint_dir: Path, std_warn_threshold: float = 1e-4, *,
                   "normalization_statistics_required": True if screened else False if inspected_numeric_contract else None})
     policy = None
     policy_path = root / "config.json"
-    if policy_path.is_file():
+    if policy_path.is_file() or policy_path.is_symlink():
+        provenance = Provenance(str(policy_path), None, None, "")
         try:
+            policy_path = _local_file(root, "config.json")
+            provenance = _provenance(policy_path)
             config = json.loads(policy_path.read_text(encoding="utf-8"))
+            if not isinstance(config, dict):
+                raise ValueError("Policy config must be a JSON object")
             if "input_features" in config and "output_features" in config:
                 policy = {PipelineFeatureType.OBSERVATION: _feature_dict(config["input_features"]),
                           PipelineFeatureType.ACTION: _feature_dict(config["output_features"])}
-        except (OSError, ValueError, KeyError, TypeError) as exc:
+        except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
             _add(report, "FEATURE_CONTRACT", DiagnosticStatus.FAIL, f"Invalid policy feature declarations: {exc}",
-                 provenance=_provenance(policy_path))
+                 provenance=provenance)
     start = len(report.findings)
     for path, config in pipelines:
         try:

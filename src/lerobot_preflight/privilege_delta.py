@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 import math
 from collections import defaultdict
 from copy import deepcopy
@@ -13,17 +13,31 @@ from typing import Any
 import torch
 from lerobot.configs import FeatureType, NormalizationMode, PolicyFeature
 from lerobot.processor import (
-    AbsoluteActionsProcessorStep, NormalizerProcessorStep, RelativeActionsProcessorStep,
-    RenameObservationsProcessorStep, UnnormalizerProcessorStep, DeviceProcessorStep,
+    AbsoluteActionsProcessorStep,
     AddBatchDimensionProcessorStep,
-    IdentityProcessorStep, PolicyProcessorPipeline, create_transition,
+    DeviceProcessorStep,
+    IdentityProcessorStep,
+    NormalizerProcessorStep,
+    PolicyProcessorPipeline,
+    RelativeActionsProcessorStep,
+    RenameObservationsProcessorStep,
+    UnnormalizerProcessorStep,
+    create_transition,
 )
 from safetensors import safe_open
 
 from .models import DiagnosticFinding, DiagnosticStatus, PreflightReport, Provenance, Severity
 from .preflight import (
-    _CONFIG_NAMES, _legacy_declared_features, _local_file, _normalization_base,
-    _physical_semantics, _provenance, _read_tensors, _role, _step_class,
+    _CONFIG_NAMES,
+    _legacy_declared_features,
+    _local_file,
+    _normalization_base,
+    _physical_semantics,
+    _provenance,
+    _read_tensors,
+    _role,
+    _step_class,
+    _validate_step_entry,
     _verified_legacy_values,
 )
 
@@ -236,8 +250,7 @@ def _static_pair(root: Path, policy: dict[str, Any]) -> tuple:
         normalizers = {}
         errors = {}
         for index, entry in enumerate(config["steps"]):
-            if not isinstance(entry, dict):
-                raise ValueError("Processor steps must be JSON objects")
+            _validate_step_entry(entry)
             try:
                 step = _native_normalizer(root, entry)
             except (ValueError, OSError, TypeError, KeyError, RuntimeError, AttributeError) as exc:

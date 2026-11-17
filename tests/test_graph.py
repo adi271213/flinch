@@ -9,12 +9,14 @@ from pathlib import Path
 import pytest
 import torch
 from lerobot.configs import FeatureType, NormalizationMode, PolicyFeature
-from lerobot.processor import (DeviceProcessorStep, NormalizerProcessorStep,
-                               PolicyProcessorPipeline, RenameObservationsProcessorStep)
+from lerobot.processor import (
+    NormalizerProcessorStep,
+    PolicyProcessorPipeline,
+    RenameObservationsProcessorStep,
+)
 from safetensors.torch import load_file, save_file
 
-from lerobot_preflight.graph import (build_processor_graph, processor_graph_to_mermaid,
-                                  write_processor_graph)
+from lerobot_preflight.graph import build_processor_graph, processor_graph_to_mermaid, write_processor_graph
 from tests.fixtures.make_bug_fixtures import make_bug_fixtures
 
 
@@ -36,6 +38,37 @@ def _edges(graph, kind):
 
 def _nodes(graph, kind):
     return [node for node in graph["nodes"] if node["type"] == kind]
+
+
+@pytest.mark.parametrize("entry", [
+    {"registry_name": ["normalizer_processor"], "config": {}},
+    {"registry_name": {"name": "normalizer_processor"}, "config": {}},
+    {"class": ["lerobot.processor.normalize_processor.NormalizerProcessorStep"], "config": {}},
+    {"registry_name": "normalizer_processor", "config": []},
+    {"registry_name": "normalizer_processor", "state_file": ["buffers.safetensors"]},
+])
+def test_graph_retains_malformed_steps_as_unknown_before_native_construction(
+    checkpoints, monkeypatch, entry,
+):
+    checkpoint = checkpoints["bug_4415_silent_bypass"]
+    for filename, steps in (("preprocessor_config.json", [entry]), ("postprocessor_config.json", [])):
+        path = checkpoint / filename
+        saved = json.loads(path.read_text())
+        saved["steps"] = steps
+        path.write_text(json.dumps(saved))
+
+    def forbidden_constructor(*args, **kwargs):
+        pytest.fail("Malformed processor declarations must not reach native constructors")
+
+    monkeypatch.setattr(NormalizerProcessorStep, "__init__", forbidden_constructor)
+    graph = build_processor_graph(checkpoint)
+    assert graph["summary"]["coverage_status"] == "UNKNOWN"
+    assert graph["summary"]["unknown_step_boundaries"] == [{
+        "file_path": "preprocessor_config.json", "step_index": 0,
+        "class_name": "invalid_step_declaration",
+    }]
+    assert any(error["status"] == "UNKNOWN" and "Invalid step 0" in error["reason"]
+               for error in graph["summary"]["errors"])
 
 
 def test_graph_4415_records_missing_namespace_and_exact_prefixed_keys(checkpoints):

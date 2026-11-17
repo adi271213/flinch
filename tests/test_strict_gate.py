@@ -1,7 +1,6 @@
 """Fail-closed comparison coverage and faithful non-finite JSON evidence."""
 
 import json
-from pathlib import Path
 
 import numpy as np
 import pytest

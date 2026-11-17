@@ -15,12 +15,12 @@ from collections.abc import Callable, Iterable
 from datetime import datetime, timezone
 from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
 from typing import Any
-from urllib.request import Request, urlopen
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.request import Request, urlopen
 
-from huggingface_hub import HfApi, get_hf_file_metadata, hf_hub_download, hf_hub_url
-import torch
 import numpy as np
+import torch
+from huggingface_hub import HfApi, get_hf_file_metadata, hf_hub_download, hf_hub_url
 from safetensors.torch import save_file
 
 from .models import DiagnosticFinding, DiagnosticStatus, Severity
@@ -406,7 +406,11 @@ def enrich_legacy_snapshot(manifest: dict[str, Any], *, opener: Callable | None 
 
 def _safe_name(filename: str) -> PurePosixPath:
     path = PurePosixPath(filename)
-    if path.is_absolute() or ".." in path.parts or "\\" in filename or not path.parts:
+    # Hub paths use POSIX separators even on Windows. A POSIX-relative drive
+    # path such as C:/config.json would escape local_dir on a Windows host;
+    # colons also create alternate data streams on that platform.
+    if (path.is_absolute() or PureWindowsPath(filename).drive or ".." in path.parts
+            or "\\" in filename or ":" in filename or not path.parts):
         raise ValueError(f"Invalid repository-relative filename: {filename}")
     return path
 
@@ -1360,15 +1364,60 @@ def _collapse_report_appendices(lines: list[str]) -> list[str]:
     return rendered
 
 
+def _validate_report_destination(path: Path) -> None:
+    """Allow replacing only a regular file recognized as a prior Hub report."""
+    if not path.exists() and not path.is_symlink():
+        return
+    recognized = False
+    if path.is_file() and not path.is_symlink():
+        try:
+            previous = path.read_text(encoding="utf-8")
+            if path.suffix == ".json":
+                document = json.loads(previous)
+                recognized = (isinstance(document, dict)
+                    and type(document.get("report_version")) is int
+                    and isinstance(document.get("generated_at_utc"), str)
+                    and isinstance(document.get("summary"), dict)
+                    and isinstance(document.get("repos"), list))
+            else:
+                recognized = previous.startswith((
+                    "# lerobot-preflight: numerical processor and chronology audit\n\nGenerated: ",
+                    "# lerobot-doctor: numerical processor and chronology audit\n\nGenerated: ",
+                    "# LeRobot Hub checkpoint audit\n\nGenerated: ",
+                ))
+        except (OSError, UnicodeError, ValueError):
+            pass
+    if not recognized:
+        raise FileExistsError(f"Refusing to overwrite an unrelated artifact or symlink: {path}")
+
+
+def _replace_report_output(path: Path, content: str) -> None:
+    """Stage complete UTF-8 content before replacing a prior generated report."""
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(prefix=f".{path.name}.", suffix=".tmp",
+                                         dir=path.parent, delete=False) as stream:
+            temporary = Path(stream.name)
+        with temporary.open("w", encoding="utf-8", newline="\n") as stream:
+            stream.write(content)
+        temporary.replace(path)
+    finally:
+        if temporary is not None and temporary.exists():
+            temporary.unlink()
+
+
 def write_hub_reports(report: dict[str, Any], output_dir: Path, report_name: str = "hub_audit_report") -> tuple[Path, Path]:
     """Write strict JSON and a portable Markdown summary with pinned repo links."""
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", report_name):
         raise ValueError("report_name must be a plain filename stem")
     output = Path(output_dir)
     report = _portable_report(report, report_dir=output)
-    output.mkdir(parents=True, exist_ok=True)
     json_path, markdown_path = output / f"{report_name}.json", output / f"{report_name}.md"
-    json_path.write_text(json.dumps(report, indent=2, ensure_ascii=False, allow_nan=False) + "\n", encoding="utf-8")
+    # Check both outputs before changing either one. In particular, --report-name
+    # config must never turn an existing checkpoint config into a scan report.
+    for path in (json_path, markdown_path):
+        _validate_report_destination(path)
+    json_content = json.dumps(report, indent=2, ensure_ascii=False, allow_nan=False) + "\n"
     summary = report["summary"]
     numeric_unknown = sum(any(f.get("status") == "UNKNOWN" and f.get("check_id") in {
         "PATHOLOGICAL_STD_GAIN", "FP16_NON_FINITE_RISK", "INVALID_NORMALIZATION_STATS",
@@ -1591,5 +1640,10 @@ def write_hub_reports(report: dict[str, Any], output_dir: Path, report_name: str
               "Cached runs reuse pinned snapshots and recorded access errors; they do not recheck current Hub permissions. Non-policy classification uses file/config evidence, not repository names.",
               f"Downloaded artifact bytes: {summary['artifact_bytes_downloaded']:,}; header bytes read: {summary['header_bytes_fetched']:,}; normalization tensor bytes read: {summary.get('normalization_bytes_fetched', 0):,}.", ""]
     lines[6:6] = _maintainer_highlights(report, output)
-    markdown_path.write_text("\n".join(_collapse_report_appendices(lines)), encoding="utf-8")
+    markdown_content = "\n".join(_collapse_report_appendices(lines))
+    output.mkdir(parents=True, exist_ok=True)
+    for path in (json_path, markdown_path):
+        _validate_report_destination(path)
+    _replace_report_output(json_path, json_content)
+    _replace_report_output(markdown_path, markdown_content)
     return json_path, markdown_path

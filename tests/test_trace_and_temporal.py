@@ -30,8 +30,8 @@ from lerobot.processor.relative_action_processor import to_absolute_actions, to_
 from lerobot_preflight.models import DiagnosticStatus
 from lerobot_preflight.temporal import run_temporal_audit
 from lerobot_preflight.trace import run_offline_trace
-from tests.subprocess_env import source_subprocess_env
 from tests.fixtures.make_bug_fixtures import make_bug_fixtures
+from tests.subprocess_env import source_subprocess_env
 
 
 @pytest.fixture

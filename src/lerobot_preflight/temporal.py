@@ -15,13 +15,16 @@ from typing import Any
 import torch
 from lerobot.configs import FeatureType
 from lerobot.lerobot_types import EnvTransition, TransitionKey
-from lerobot.processor import (AbsoluteActionsProcessorStep, NormalizerProcessorStep,
-                               RelativeActionsProcessorStep, UnnormalizerProcessorStep)
+from lerobot.processor import (
+    AbsoluteActionsProcessorStep,
+    NormalizerProcessorStep,
+    RelativeActionsProcessorStep,
+    UnnormalizerProcessorStep,
+)
 from lerobot.utils.constants import ACTION, OBS_STATE
 
 from .models import DiagnosticFinding, DiagnosticStatus, Provenance, Severity
 from .preflight import _MODE_STATS, _provenance
-
 
 _CHECK_ID = "TEMPORAL_ANCHOR_MISMATCH"
 _ROUNDTRIP_ATOL = 1e-5
@@ -593,7 +596,7 @@ def run_temporal_audit(
     checkpoint_dir: Path, metadata_path: Path | None = None,
 ) -> list[DiagnosticFinding]:
     """Compare native anchoring with config declarations and an opt-in sidecar."""
-    from .trace import _TraceLoadError, _load_processor_pair, _step_provenance
+    from .trace import _load_processor_pair, _step_provenance, _TraceLoadError
 
     root = Path(checkpoint_dir).resolve()
     try:

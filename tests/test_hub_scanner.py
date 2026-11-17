@@ -240,18 +240,24 @@ def test_legacy_tensor_ranges_validate_response_and_truncation(tmp_path: Path, f
     def opener(request, **kwargs):
         start, end = map(int, request.get_header("Range").removeprefix("bytes=").split("-"))
         headers = {"Content-Range": f"bytes {start}-{end}/{len(source)}", "Content-Length": str(end - start + 1)}
-        if failure == "range": headers["Content-Range"] = f"bytes 0-3/{len(source)}"
-        if failure == "size": headers["Content-Range"] = f"bytes {start}-{end}/{len(source) + 1}"
-        if failure == "encoding": headers["Content-Encoding"] = "gzip"
+        if failure == "range":
+            headers["Content-Range"] = f"bytes 0-3/{len(source)}"
+        if failure == "size":
+            headers["Content-Range"] = f"bytes {start}-{end}/{len(source) + 1}"
+        if failure == "encoding":
+            headers["Content-Encoding"] = "gzip"
         body = source[start:end + 1]
-        if failure == "truncated": body = body[:-1]
+        if failure == "truncated":
+            body = body[:-1]
         return _FakeRangeResponse(body, 206, headers, reads)
     state, metadata = hub_scanner.fetch_legacy_normalization_tensors(
         "org/legacy", _normalization_header(path), revision="a" * 40, opener=opener,
     )
     assert not state and metadata["errors"]
-    if failure != "truncated": assert reads == []
-    else: assert metadata["bytes_fetched"] == 3
+    if failure != "truncated":
+        assert reads == []
+    else:
+        assert metadata["bytes_fetched"] == 3
 
 
 @pytest.mark.parametrize("mutation", ["shape", "dtype", "offsets", "oversized"])
@@ -261,9 +267,12 @@ def test_legacy_descriptor_validation_happens_before_network(tmp_path: Path, mut
     save_file({key: torch.tensor([0.5])}, path)
     header = _normalization_header(path)
     descriptor = header["tensors"][key]
-    if mutation == "shape": descriptor["shape"] = [2]
-    if mutation == "dtype": descriptor["dtype"] = "I32"
-    if mutation == "offsets": descriptor["data_offsets"] = [header["total_size"], header["total_size"] + 4]
+    if mutation == "shape":
+        descriptor["shape"] = [2]
+    if mutation == "dtype":
+        descriptor["dtype"] = "I32"
+    if mutation == "offsets":
+        descriptor["data_offsets"] = [header["total_size"], header["total_size"] + 4]
     if mutation == "oversized":
         descriptor["shape"] = [hub_scanner.MAX_LEGACY_TENSOR_BYTES]
         descriptor["data_offsets"] = [0, hub_scanner.MAX_LEGACY_TENSOR_BYTES * 4]
@@ -1139,6 +1148,72 @@ def test_write_hub_reports_exports_strict_json_and_repository_links(tmp_path: Pa
     assert named_json.name == "hub_100_report.json" and named_md.name == "hub_100_report.md"
     with pytest.raises(ValueError, match="filename stem"):
         write_hub_reports(report, tmp_path / "reports", "../unsafe")
+
+
+@pytest.mark.parametrize("filename", [
+    "C:/escape/config.json", "C:config.json", "nested/config.json:stream",
+    "//server/share/config.json", "\\\\server\\share\\config.json",
+    "/config.json", "../config.json", "nested/../config.json", "",
+])
+def test_repository_filenames_reject_windows_drives_streams_and_traversal(filename: str) -> None:
+    # Run Windows containment checks on every host, rather than relying on the
+    # local operating system's Path interpretation.
+    with pytest.raises(ValueError, match="repository-relative"):
+        hub_scanner._safe_name(filename)
+
+
+@pytest.mark.parametrize("report_name", ["../audit", "/tmp/audit", "C:/audit", "C:audit", "\\\\server\\share\\audit"])
+def test_hub_report_names_reject_absolute_paths_and_traversal(tmp_path: Path, report_name: str) -> None:
+    report = hub_scanner._report([], {"mode": "cached"})
+    with pytest.raises(ValueError, match="filename stem"):
+        write_hub_reports(report, tmp_path / "reports", report_name)
+    assert not (tmp_path / "reports").exists()
+
+
+@pytest.mark.parametrize("extension", ["json", "md"])
+def test_hub_report_checks_both_destinations_before_overwriting(
+    tmp_path: Path, extension: str,
+) -> None:
+    report = hub_scanner._report([], {"mode": "cached"})
+    destination = tmp_path / f"config.{extension}"
+    destination.write_text('{"input_features": {}}' if extension == "json" else "user notes")
+    before = destination.read_bytes()
+    with pytest.raises(FileExistsError, match="Refusing to overwrite"):
+        write_hub_reports(report, tmp_path, "config")
+    assert destination.read_bytes() == before
+    assert not (tmp_path / f"config.{'md' if extension == 'json' else 'json'}").exists()
+
+
+@pytest.mark.parametrize("extension", ["json", "md"])
+def test_hub_report_refuses_symlink_outputs_without_mutating_the_target(
+    tmp_path: Path, extension: str,
+) -> None:
+    report = hub_scanner._report([], {"mode": "cached"})
+    target = tmp_path / "checkpoint_config.json"
+    target.write_text('{"input_features": {}}')
+    before = target.read_bytes()
+    destination = tmp_path / f"audit.{extension}"
+    destination.symlink_to(target)
+    with pytest.raises(FileExistsError, match="symlink"):
+        write_hub_reports(report, tmp_path, "audit")
+    assert target.read_bytes() == before
+    assert destination.is_symlink()
+    assert not (tmp_path / f"audit.{'md' if extension == 'json' else 'json'}").exists()
+
+
+def test_hub_report_replaces_prior_reports_and_preserves_them_if_rendering_fails(tmp_path: Path) -> None:
+    report = hub_scanner._report([], {"mode": "cached"})
+    paths = write_hub_reports(report, tmp_path)
+    report["generated_at_utc"] = "2026-11-17T00:00:00+00:00"
+    assert write_hub_reports(report, tmp_path) == paths
+    assert json.loads(paths[0].read_text())["generated_at_utc"] == report["generated_at_utc"]
+    assert report["generated_at_utc"] in paths[1].read_text()
+    before = [path.read_bytes() for path in paths]
+    del report["summary"]["artifact_bytes_downloaded"]
+    with pytest.raises(KeyError):
+        write_hub_reports(report, tmp_path)
+    assert [path.read_bytes() for path in paths] == before
+    assert not list(tmp_path.glob("*.tmp"))
 
 
 @pytest.mark.parametrize("dtype,raw,expected", [

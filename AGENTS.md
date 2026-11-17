@@ -1,4 +1,4 @@
-# AGENTS.md — Engineering Rules for lerobot-doctor (DexDoctor)
+# AGENTS.md — Engineering Rules for lerobot-preflight
 
 ## 1. Ground-Truth Source Code Inspection (MANDATORY)
 - NEVER guess `lerobot` class names, method signatures, or JSON keys from training memory.

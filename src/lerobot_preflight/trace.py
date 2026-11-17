@@ -27,6 +27,7 @@ from lerobot.processor import (
     batch_to_transition,
     transition_to_batch,
 )
+
 try:
     from lerobot.processor.rename_processor import rename_keys
 except ImportError:
@@ -41,7 +42,15 @@ from lerobot.utils.constants import (
 )
 
 from .models import DiagnosticFinding, DiagnosticStatus, Provenance, Severity
-from .preflight import _CONFIG_NAMES, _local_file, _provenance, _read_tensors, _role, _step_class
+from .preflight import (
+    _CONFIG_NAMES,
+    _local_file,
+    _provenance,
+    _read_tensors,
+    _role,
+    _step_class,
+    _validate_step_entry,
+)
 
 _NORMALIZERS = (NormalizerProcessorStep, UnnormalizerProcessorStep)
 _TRACE_CHECKS = ("SILENT_STEP_BYPASS", "EMPIRICAL_GAIN_EXPLOSION", "RUNTIME_NON_FINITE")
@@ -168,7 +177,8 @@ def _load_processor_pair(
         stubbed_indices: list[int] = []
         for index, entry in enumerate(config["steps"]):
             try:
-                cls = _trace_step_class(entry, numeric_only) if isinstance(entry, dict) else None
+                _validate_step_entry(entry)
+                cls = _trace_step_class(entry, numeric_only)
             except (TypeError, ValueError) as exc:
                 raise _TraceLoadError(DiagnosticStatus.FAIL, f"Invalid step declaration: {exc}",
                                       {"step_index": index}, _provenance(path, index)) from exc
