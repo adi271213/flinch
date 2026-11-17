@@ -35,6 +35,7 @@ from lerobot.processor import (
 )
 from safetensors import safe_open
 
+from .guard import InputEnvelopeGuardStep
 from .models import (
     MAX_EVIDENCE_ITEMS,
     DiagnosticFinding,
@@ -53,6 +54,7 @@ _SAFE_CLASSES = (
     AddBatchDimensionProcessorStep,
     DeviceProcessorStep,
     IdentityProcessorStep,
+    InputEnvelopeGuardStep,  # Flinch's own runtime guard: it never changes in-range values.
 )
 _CONFIG_NAMES = {
     "policy_preprocessor.json",
@@ -187,7 +189,7 @@ def _native_normalization_probe(
                     barrier = ValueError(f"Active native normalization is unavailable at step {index}")
                     break
             elif (
-                cls not in (IdentityProcessorStep, AddBatchDimensionProcessorStep)
+                cls not in (IdentityProcessorStep, AddBatchDimensionProcessorStep, InputEnvelopeGuardStep)
                 and kind not in language_only
             ):
                 barrier = ValueError(

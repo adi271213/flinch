@@ -108,6 +108,20 @@ Flinch never guesses physical units. A tensor's shape can't tell you whether a j
 - **Changes between checkpoints:** with `--baseline`, significant changes to input/action scaling, offsets or clipping under the configured thresholds, and increases in open-loop execution steps. Missing required comparison evidence blocks the gate.
 - **Broken files:** Git LFS pointers saved in place of real data, and old-format checkpoints that need migrating.
 
+## 🛡️ Guard your robot at runtime
+
+The checks above run before deployment. To also catch a bad input while the robot is running, add Flinch's guard to your preprocessor. It sits right after the normalizer and stops the policy from ever seeing an exploded value:
+
+```python
+from lerobot_flinch.guard import add_input_guard
+
+preprocessor = add_input_guard(preprocessor, max_abs=10.0)  # raise if a normalized input leaves ±10
+```
+
+`max_abs` is in normalized units, so with mean/std normalization `10` means ten standard deviations from the training mean. By default the guard raises `InputEnvelopeError` and names the key and coordinates. Use `on_violation="clamp"` to clip instead. NaN or Inf always raises, because clipping would hide it.
+
+The guard saves and loads with the pipeline. Just `import lerobot_flinch.guard` before `PolicyProcessorPipeline.from_pretrained` so LeRobot knows the step.
+
 ## ⚙️ How it works
 
 ```mermaid
@@ -136,6 +150,7 @@ Flinch uses LeRobot's own `PolicyProcessorPipeline` and hooks for offline CPU pr
 src/lerobot_flinch/
   cli.py              the flinch command
   hub_source.py       hf:// downloads
+  guard.py            runtime input guard step
   preflight.py        stats, config and file checks
   trace.py            runs a sample through each processor step
   temporal.py         frame order and relative-action checks
