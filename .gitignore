@@ -1,0 +1,11 @@
+.lerobot_ref/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+.hub_audit_snapshots/
+
+dist/
+build/
+ci-results/

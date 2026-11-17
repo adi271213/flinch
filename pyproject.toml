@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=71"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lerobot-preflight"
+version = "0.1.0"
+description = "Reference-free numerical processor and chronology auditing for LeRobot checkpoints"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "huggingface-hub>=1.31,<3.0",
+    "lerobot>=0.7.0",
+    "numpy>=2.0",
+    "safetensors>=0.4.3",
+    "torch>=2.7",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+[project.scripts]
+lerobot-preflight = "lerobot_preflight.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
