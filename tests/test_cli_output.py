@@ -265,3 +265,22 @@ def test_unavailable_repository_gets_one_line_error(
     assert "private or gated" in err
     assert "Invalid username or password" not in err
     assert "Request ID" not in err
+
+
+def test_unavailable_repository_error_is_printed_once_and_still_reported(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    class MissingRepoApi:
+        def model_info(self, repo_id: str, **kwargs: object) -> object:
+            raise type("RepositoryNotFoundError", (OSError,), {})("404 Repository Not Found")
+
+    monkeypatch.setattr(hub_scanner, "HfApi", lambda **kwargs: MissingRepoApi())
+    report_path = tmp_path / "report.json"
+
+    assert main(["--policy", "hf://owner/missing", "--report", str(report_path)]) == 3
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.count("was not found") == 1
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert [f["check_id"] for f in report["findings"]] == ["RUNNER_ERROR"]
+    assert report["exit_code"] == 3

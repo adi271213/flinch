@@ -381,7 +381,8 @@ def main(argv: list[str] | None = None) -> int:
             str(args.policy), strict=args.strict, baseline_requested=args.baseline is not None
         )
         report.findings.append(_runner_error("Hub snapshot", exc))
-        return _finish_report(args, report)
+        # The error is already on stderr; only write the JSON report (if asked) for CI.
+        return _finish_report(args, report, print_terminal=False)
 
 
 def _hub_snapshot_finding(resolved: ResolvedCheckpoint, role: str) -> DiagnosticFinding:
@@ -441,7 +442,11 @@ def _run_resolved(
 
 
 def _finish_report(
-    args: argparse.Namespace, report: PreflightReport, *, policy: ResolvedCheckpoint | None = None
+    args: argparse.Namespace,
+    report: PreflightReport,
+    *,
+    policy: ResolvedCheckpoint | None = None,
+    print_terminal: bool = True,
 ) -> int:
     """Retain findings and output errors before determining the effective gate result."""
     graph_written = False
@@ -458,7 +463,8 @@ def _finish_report(
             report.findings.append(finding)
             print(f"Could not write graph {args.graph}: {exc}", file=sys.stderr)
     try:
-        _print_report(report)
+        if print_terminal:
+            _print_report(report)
         if graph_written:
             print(f"Processor lineage graph: {args.graph}")
     except Exception as exc:
