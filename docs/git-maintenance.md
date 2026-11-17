@@ -1,8 +1,6 @@
-# Git history and attribution
+# Git maintenance
 
-The 2026-11-17 review inspected both the original research checkout and the private publication repository. The research history has 13 commits under the configured identity Aditya Jain; the publication repository has four commits under the legitimate GitHub identity `adi271213`.
-
-Neither history contains assistant coauthor trailers, generated-by footers, or bot contributor records. One research commit subject names an external audit; that factual provenance is not present in the publication history. No published history was rewritten and no contributor identity was changed.
+Inspect the target remote and branch before editing unpublished commits. Preserve published contribution records, authentic authorship, audit provenance and legal attribution.
 
 ## Inspect before changing history
 
@@ -16,7 +14,7 @@ git log --format=fuller
 git log --all --format='%h %s%n%b' --grep='Co-authored-by:' --regexp-ignore-case
 ```
 
-Review locally; do not paste personal metadata into an issue unnecessarily. An attribution record is not an error merely because it identifies a tool or contributor. Preserve genuine contributions, legal notices and required disclosures.
+Review locally; do not paste personal metadata into an issue unnecessarily. Preserve genuine contributions, legal notices and required disclosures.
 
 ## Clean up future unpublished work
 
@@ -24,7 +22,7 @@ No rewrite is needed for the current published repository. For a future working 
 
 ```bash
 git fetch origin main
-git switch -c codex/history-cleanup
+git switch -c chore/history-cleanup
 git log --oneline origin/main..HEAD
 git rebase -i origin/main
 ```
@@ -37,4 +35,4 @@ After reviewing the resulting tree and running checks, publish the new branch no
 git push -u origin HEAD
 ```
 
-Do not use this procedure on shared `main`, rewrite existing authors to imply different provenance, or force-push published history as cosmetic cleanup. Repository-local editor/agent scratch files are ignored prospectively; the active `AGENTS.md` engineering guidance remains part of the source.
+Do not use this procedure on shared `main`, rewrite existing authors to imply different provenance, or force-push published history as cosmetic cleanup. Keep local scratch-file exclusions in `.git/info/exclude`; the active `AGENTS.md` engineering guidance remains part of the source.

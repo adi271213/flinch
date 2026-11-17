@@ -23,7 +23,7 @@ Ruff checks syntax, undefined/unused names, import order, and basic Python error
 
 ## Branches, commits and pull requests
 
-Create a focused branch with a descriptive name, such as `fix/stat-namespace` or `docs/installation`. Agent-created branches use the `codex/` prefix. Keep each pull request limited to one demonstrated problem or coherent change.
+Create a focused branch with a descriptive name, such as `fix/stat-namespace` or `docs/installation`. Keep each pull request limited to one demonstrated problem or coherent change.
 
 Use [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/), for example:
 
@@ -67,11 +67,11 @@ The six-job GitHub Actions matrix checks both artifacts on Linux, macOS and Wind
 
 ## Repository hygiene
 
-Keep source under `src/lerobot_preflight`, regression tests under `tests`, source tools under `scripts`, and maintained prose under `docs`. Do not commit virtualenvs, cached checkpoints, model weights, bytecode, build products, tokens, or raw private diagnostic evidence. Historical local research archives are not required to install or test the package.
+Keep source under `src/lerobot_preflight`, regression tests under `tests`, source tools under `scripts`, and maintained prose under `docs`. Do not commit virtualenvs, cached checkpoints, model weights, bytecode, build products, tokens, or raw private diagnostic evidence. Keep editor-local exclusions in `.git/info/exclude`. Historical local research archives are not required to install or test the package.
 
 Use your legitimate Git identity and preserve authentic third-party attribution. Do not rewrite published history as part of cleanup. Keep changes focused and explain the verified problem, resulting behavior, and actual validation in the pull request.
 
-See [Git maintenance](docs/git-maintenance.md) for the completed history review and commands to organize future unpublished work.
+See [Git maintenance](docs/git-maintenance.md) for commands to inspect attribution and organize unpublished work.
 
 ## License
 
