@@ -8,7 +8,7 @@ Native processor construction is limited to inspected classes. Numeric VLA traci
 
 Checkpoint paths referenced by processor JSON must remain within the checkpoint directory. Caller-selected samples and metadata sidecars may be external. Output exporters reject unrelated existing artifacts and symlink destinations. These protections are not a sandbox against concurrent filesystem changes: use a stable checkpoint copy when auditing untrusted or changing input. Large local inputs may still consume CPU or memory.
 
-The Hub downloader is the network-enabled component. It scans public repositories at pinned revisions and enforces header, file, snapshot, and tensor-range byte limits. Local checks and traces do not require Hub credentials. Do not place access tokens in sample files, processor JSON, command-line arguments, or committed environment files.
+The Hub downloader is the network-enabled component, used by `scripts/scan_hub.py` and by `--policy`/`--baseline hf://owner/name`. It fetches public repositories at pinned revisions and enforces header, file, snapshot, and tensor-range byte limits. Local checks and traces do not require Hub credentials. Do not place access tokens in sample files, processor JSON, command-line arguments, or committed environment files.
 
 Reports may contain tensor slices, dataset names, checkpoint paths, and caller-supplied metadata. Review them before sharing, particularly when using private checkpoints. Hub report path redaction does not guarantee that arbitrary input text contains no personal or confidential information.
 

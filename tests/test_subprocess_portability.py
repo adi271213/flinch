@@ -34,7 +34,7 @@ def test_cli_source_subprocess_detects_bypass_without_editable_install(tmp_path)
     source = Path(__file__).resolve().parents[1] / "src"
     expected_lerobot = Path(lerobot.__file__).resolve()
     env = source_subprocess_env()
-    env["DOCTOR_TEST_DEPENDENCY_PATHS"] = json.dumps(
+    env["PREFLIGHT_TEST_DEPENDENCY_PATHS"] = json.dumps(
         list(
             dict.fromkeys(
                 [
@@ -52,7 +52,7 @@ import json, os, sys
 from pathlib import Path
 # -S disables site initialization and every .pth editable-install hook. Add only
 # dependency directories, as plain paths, without processing their .pth files.
-sys.path.extend(json.loads(os.environ["DOCTOR_TEST_DEPENDENCY_PATHS"]))
+sys.path.extend(json.loads(os.environ["PREFLIGHT_TEST_DEPENDENCY_PATHS"]))
 assert not any(type(finder).__module__.startswith("__editable") or
                getattr(finder, "__module__", "").startswith("__editable")
                for finder in sys.meta_path)

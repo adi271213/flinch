@@ -61,7 +61,7 @@ def test_round4_strict_clean_native_checkpoint_does_not_require_custom_physical_
             }
         )
     )
-    report = cli.run_doctor(checkpoint, strict=True)
+    report = cli.run_checks(checkpoint, strict=True)
     semantics = [f for f in report.findings if f.check_id == "PHYSICAL_SEMANTICS"]
     assert len(semantics) == 3
     assert all(
@@ -76,7 +76,7 @@ def test_round4_strict_clean_native_checkpoint_does_not_require_custom_physical_
 
 def test_round4_explicit_metadata_flag_controls_temporal_probe(tmp_path):
     checkpoint = make_bug_fixtures(tmp_path / "fixtures")["bug_5315_temporal_anchor"]
-    without = cli.run_doctor(checkpoint)
+    without = cli.run_checks(checkpoint)
     assert not any(
         f.check_id == "TEMPORAL_ANCHOR_MISMATCH" and f.status is DiagnosticStatus.FAIL
         for f in without.findings
@@ -119,7 +119,7 @@ def test_missing_real_action_buffers_fail_baseline_closed(tmp_path):
     for entry in config["steps"]:
         entry.pop("state_file", None)
     path.write_text(json.dumps(config))
-    result = cli.run_doctor(checkpoint, baseline=checkpoint)
+    result = cli.run_checks(checkpoint, baseline=checkpoint)
     assert result.has_failures()
     assert any(
         f.status is DiagnosticStatus.UNKNOWN and f.details.get("required_coverage") for f in result.findings
@@ -128,7 +128,7 @@ def test_missing_real_action_buffers_fail_baseline_closed(tmp_path):
 
 def test_non_finite_ieee_evidence_survives_strict_json(tmp_path):
     checkpoint = make_bug_fixtures(tmp_path / "fixtures")["bug_4973_fp16_nan"]
-    report = cli.run_doctor(checkpoint, sample=checkpoint / "sample_observation.npz")
+    report = cli.run_checks(checkpoint, sample=checkpoint / "sample_observation.npz")
     runtime = next(f for f in report.findings if f.check_id == "RUNTIME_NON_FINITE")
     data = runtime.to_dict()
     assert data["details"]["tensor_slice"] == ["NaN"]

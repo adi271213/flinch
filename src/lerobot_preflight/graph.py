@@ -44,6 +44,7 @@ from .preflight import (
 )
 
 _FORMAT = "lerobot-preflight-processor-lineage-v1"
+# Pre-rename graph exports remain readable; new exports always use _FORMAT.
 _LEGACY_FORMAT = "lerobot-doctor-processor-lineage-v1"
 _MARKER = "%% " + _FORMAT
 _BUFFER_BUDGET = 5 * 1024 * 1024

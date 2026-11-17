@@ -6,10 +6,18 @@ import argparse
 import json
 import sys
 from collections.abc import Callable
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
 
 from . import __version__
+from .hub_source import (
+    HubSourceError,
+    ResolvedCheckpoint,
+    looks_like_repo_id,
+    parse_hub_reference,
+    resolve_checkpoint,
+)
 from .models import DiagnosticFinding, DiagnosticStatus, PreflightReport, Severity
 from .preflight import run_preflight
 from .temporal import run_temporal_audit
@@ -57,7 +65,7 @@ def _collect(
         report.findings.append(_runner_error(stage, exc))
 
 
-def run_doctor(
+def run_checks(
     policy: Path,
     sample: Path | None = None,
     baseline: Path | None = None,
@@ -175,7 +183,7 @@ def _is_prior_report(path: Path) -> bool:
 
 
 def _write_report(path: Path, report: PreflightReport) -> None:
-    """Write JSON only to a new path or a previous doctor report."""
+    """Write JSON only to a new path or a previous preflight report."""
     if path.exists() or path.is_symlink():
         if not _is_prior_report(path):
             raise FileExistsError(f"Refusing to overwrite an audited artifact: {path}")
@@ -192,9 +200,16 @@ def _write_report(path: Path, report: PreflightReport) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="lerobot-preflight", description=__doc__)
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
-    parser.add_argument("--policy", type=Path, required=True, help="Local checkpoint directory")
+    parser.add_argument(
+        "--policy",
+        required=True,
+        help="Local checkpoint directory, or a public Hub checkpoint as hf://owner/name[@revision]",
+    )
     parser.add_argument("--sample", type=Path, help="Local observation NPZ for offline tracing")
-    parser.add_argument("--baseline", type=Path, help="Local baseline checkpoint for privilege comparison")
+    parser.add_argument(
+        "--baseline",
+        help="Baseline checkpoint for privilege comparison: local directory or hf://owner/name[@revision]",
+    )
     parser.add_argument(
         "--strict",
         action="store_true",
@@ -216,19 +231,81 @@ def main(argv: list[str] | None = None) -> int:
         help="Warn below this saved standard deviation (default: 1e-4)",
     )
     args = parser.parse_args(argv)
+    for option in ("policy", "baseline"):
+        value = getattr(args, option)
+        if value is None:
+            continue
+        try:
+            parse_hub_reference(value)
+        except HubSourceError as exc:
+            parser.error(str(exc))
+        if looks_like_repo_id(value):
+            parser.error(
+                f"--{option} {value!r} is not a local directory. "
+                f"To audit a Hugging Face Hub checkpoint, use --{option} hf://{value}"
+            )
 
     try:
-        report = run_doctor(
-            args.policy,
+        with ExitStack() as stack:
+            policy = stack.enter_context(resolve_checkpoint(args.policy))
+            baseline = stack.enter_context(resolve_checkpoint(args.baseline)) if args.baseline else None
+            return _run_resolved(args, policy, baseline)
+    except HubSourceError as exc:
+        print(f"lerobot-preflight: {exc}", file=sys.stderr)
+        return 1
+
+
+def _hub_snapshot_finding(resolved: ResolvedCheckpoint, role: str) -> DiagnosticFinding:
+    manifest = resolved.manifest or {}
+    details = {
+        "role": role,
+        "repo_id": manifest.get("repo_id"),
+        "requested_revision": manifest.get("requested_revision"),
+        "revision": manifest.get("revision"),
+        "downloaded_files": manifest.get("downloaded_files", []),
+        "artifact_bytes_downloaded": manifest.get("artifact_bytes_downloaded"),
+        "neural_weights_downloaded": False,
+        "errors": manifest.get("errors", []),
+    }
+    if manifest.get("errors"):
+        return DiagnosticFinding(
+            "HUB_SNAPSHOT",
+            DiagnosticStatus.UNKNOWN,
+            Severity.WARNING,
+            f"Audited {resolved.label}; some optional Hub metadata or weight headers were unavailable.",
+            details,
+        )
+    return DiagnosticFinding(
+        "HUB_SNAPSHOT",
+        DiagnosticStatus.PASS,
+        Severity.INFO,
+        f"Audited pinned {role} snapshot {resolved.label}; neural weights were not downloaded.",
+        details,
+    )
+
+
+def _run_resolved(
+    args: argparse.Namespace, policy: ResolvedCheckpoint, baseline: ResolvedCheckpoint | None
+) -> int:
+    try:
+        report = run_checks(
+            policy.path,
             args.sample,
-            args.baseline,
+            baseline.path if baseline is not None else None,
             args.std_threshold,
             strict=args.strict,
             metadata=args.metadata,
         )
     except Exception as exc:
         report = PreflightReport(str(args.policy))
-        report.findings.append(_runner_error("doctor", exc))
+        report.findings.append(_runner_error("preflight run", exc))
+    report.checkpoint_dir = policy.label
+    hub_findings = [
+        _hub_snapshot_finding(resolved, role)
+        for resolved, role in ((policy, "policy"), (baseline, "baseline"))
+        if resolved is not None and resolved.manifest is not None
+    ]
+    report.findings[:0] = hub_findings
     _print_report(report)
     if args.report is not None:
         try:
@@ -240,7 +317,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             from .graph import build_processor_graph, write_processor_graph
 
-            graph = build_processor_graph(args.policy, metadata_path=args.metadata)
+            graph = build_processor_graph(policy.path, metadata_path=args.metadata)
             write_processor_graph(graph, args.graph)
             print(f"Processor lineage graph: {args.graph}")
         except Exception as exc:

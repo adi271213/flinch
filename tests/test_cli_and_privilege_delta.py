@@ -1,4 +1,4 @@
-"""Checkpoint privilege comparisons and doctor CLI integration."""
+"""Checkpoint privilege comparisons and preflight CLI integration."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ from lerobot.processor import (
 )
 from safetensors.torch import load_file, save_file
 
-from lerobot_preflight.cli import main, run_doctor
+from lerobot_preflight.cli import main, run_checks
 from lerobot_preflight.models import DiagnosticStatus, PreflightReport
 from lerobot_preflight.privilege_delta import run_privilege_delta
 from tests.fixtures.make_bug_fixtures import make_bug_fixtures
@@ -232,7 +232,7 @@ def test_serialized_clipping_guard_removal_is_found_without_loading_its_construc
     post_config_path = baseline / "postprocessor_config.json"
     config = json.loads(post_config_path.read_text())
     # The inspected native vla_jepa clip step clamps to [-1, 1] before unnormalization.
-    # Insert only its serialized declaration; the doctor must not import its policy module.
+    # Insert only its serialized declaration; the preflight must not import its policy module.
     config["steps"].insert(0, {"registry_name": "vla_jepa_clip_actions", "config": {}})
     post_config_path.write_text(json.dumps(config))
 
@@ -348,13 +348,13 @@ def test_policy_normalization_mapping_disagreeing_with_native_postprocessor_is_c
     assert not _find(findings, "PRIVILEGE_ACTION_GAIN_ESCALATION", DiagnosticStatus.FAIL)
 
 
-def test_doctor_aggregates_static_trace_temporal_and_baseline_checks(
+def test_run_checks_aggregates_static_trace_temporal_and_baseline_checks(
     comparison_pair: tuple[Path, Path],
 ) -> None:
     baseline, candidate = comparison_pair
     _rewrite_std(_post_state(candidate), [2, 6], 0.75)
     _write_policy_config(candidate, n_action_steps=100)
-    report = run_doctor(
+    report = run_checks(
         candidate,
         sample=candidate / "sample_observation.npz",
         baseline=baseline,
@@ -379,7 +379,7 @@ def test_runner_records_unexpected_stage_error_and_continues_to_temporal(
         raise RuntimeError("injected preflight failure")
 
     monkeypatch.setattr(cli_module, "run_preflight", injected_preflight_error)
-    report = run_doctor(checkpoint)
+    report = run_checks(checkpoint)
     runner_failures = _find(report.findings, "RUNNER_ERROR", DiagnosticStatus.FAIL)
     assert len(runner_failures) == 1
     assert runner_failures[0].details["stage"] == "preflight"
@@ -525,7 +525,7 @@ def test_cli_refuses_to_overwrite_an_audited_artifact(
     assert "Refusing to overwrite an audited artifact" in capsys.readouterr().err
 
 
-def test_privilege_delta_and_doctor_do_not_open_network_or_mutate_artifacts(
+def test_privilege_delta_and_run_checks_do_not_open_network_or_mutate_artifacts(
     comparison_pair: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     baseline, candidate = comparison_pair
@@ -541,11 +541,11 @@ def test_privilege_delta_and_doctor_do_not_open_network_or_mutate_artifacts(
     before_baseline, before_candidate = snapshot(baseline), snapshot(candidate)
 
     def forbid_socket(*args, **kwargs):
-        pytest.fail("doctor attempted to open a network socket")
+        pytest.fail("preflight attempted to open a network socket")
 
     monkeypatch.setattr(socket, "socket", forbid_socket)
     run_privilege_delta(baseline, candidate)
-    run_doctor(candidate, baseline=baseline)
+    run_checks(candidate, baseline=baseline)
     assert snapshot(baseline) == before_baseline
     assert snapshot(candidate) == before_candidate
 

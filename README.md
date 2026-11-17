@@ -88,7 +88,21 @@ lerobot-preflight --version
 
 Cloning the currently private repository requires access. In Windows PowerShell, create the environment with `py -3.12 -m venv .venv`, then use `.\.venv\Scripts\python.exe` and `.\.venv\Scripts\lerobot-preflight.exe`; activation is optional.
 
-Run a local example from the checkout without fetching a checkpoint:
+Audit a public Hub checkpoint directly. This one ships a near-zero `observation.state` std:
+
+```bash
+lerobot-preflight --policy hf://jhseon-holiday/vqbet_xarm_holi_test@7dba32e8f65251b494491d7cefecfa8a6d5c2da7
+```
+
+```text
+FAIL (2)
+  [PATHOLOGICAL_STD_GAIN] Forward MEAN_STD normalization has gain up to 149856.71x at indices [4]. ...
+    key=normalize_inputs.buffer_observation_state.std | dims=[4] | values=[6.6630414039536845e-06]
+```
+
+`hf://owner/name[@revision]` downloads only processor configs, processor statistics, the model header and bounded legacy normalization slices into a temporary directory, pins the resolved commit, and never downloads neural weights. Only public, ungated repositories are supported; for others, download the checkpoint and pass its local path. A bare `owner/name` that is not a local directory is rejected with a hint to add `hf://`.
+
+Or run a local example from the checkout without network access:
 
 ```bash
 python -c "from pathlib import Path; from tests.fixtures.make_bug_fixtures import make_bug_fixtures; make_bug_fixtures(Path('.preflight-demo'))"
@@ -105,6 +119,9 @@ No `.env` file is required or loaded. See [.env.example](.env.example) for optio
 ```bash
 # Static artifacts, active normalization and chronology
 lerobot-preflight --policy ./ckpt
+
+# The same checks on a public Hub checkpoint, optionally pinned to a branch, tag or commit
+lerobot-preflight --policy hf://lerobot/smolvla_base@main
 
 # Trace a recorded numeric sample
 lerobot-preflight --policy ./ckpt --sample ./obs.npz
@@ -171,9 +188,9 @@ Checkpoint paths and audit decisions are explicit CLI arguments rather than hidd
 
 | Variable / flag | Type | Default | Required | Description |
 | --- | --- | --- | --- | --- |
-| `--policy` | Path | None | Yes | Local checkpoint directory. |
+| `--policy` | Path or `hf://` | None | Yes | Local checkpoint directory, or public Hub checkpoint `hf://owner/name[@revision]`. |
 | `--sample` | Path | None | No | Numeric observation NPZ; optionally includes action. |
-| `--baseline` | Path | None | No | Reference processor checkpoint for comparison. |
+| `--baseline` | Path or `hf://` | None | No | Reference processor checkpoint for comparison; local or `hf://`. |
 | `--report` | Path | None | No | New or recognized prior JSON report destination. |
 | `--graph` | Path | None | No | JSON/Mermaid lineage destination. |
 | `--metadata` | Path | None | No | Explicit semantics or chronology JSON sidecar. |

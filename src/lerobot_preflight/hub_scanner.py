@@ -566,8 +566,13 @@ def _download_error(filename: str | None, exc: Exception) -> dict[str, Any]:
     }
 
 
-def download_lightweight_snapshot(repo_id: str, snapshot_dir: Path, api: Any | None = None) -> dict[str, Any]:
-    """Populate a fresh snapshot using pinned, size-checked public Hub files."""
+def download_lightweight_snapshot(
+    repo_id: str, snapshot_dir: Path, api: Any | None = None, *, revision: str | None = None
+) -> dict[str, Any]:
+    """Populate a fresh snapshot using pinned, size-checked public Hub files.
+
+    ``revision`` selects a branch, tag or commit; the resolved immutable commit is always recorded.
+    """
     api = api if api is not None else HfApi(token=False)
     root = Path(snapshot_dir).resolve()
     root.mkdir(parents=True, exist_ok=True)
@@ -590,8 +595,10 @@ def download_lightweight_snapshot(repo_id: str, snapshot_dir: Path, api: Any | N
         "repo_files_complete": False,
         "full_model_weights_downloaded": False,
     }
+    manifest["requested_revision"] = revision
     try:
-        info = api.model_info(repo_id, files_metadata=True, timeout=20)
+        revision_option = {"revision": revision} if revision is not None else {}
+        info = api.model_info(repo_id, files_metadata=True, timeout=20, **revision_option)
         manifest["repo_access"] = {
             "private": bool(getattr(info, "private", False)),
             "gated": getattr(info, "gated", False),
@@ -1976,6 +1983,7 @@ def _validate_report_destination(path: Path) -> None:
                 recognized = previous.startswith(
                     (
                         "# lerobot-preflight: numerical processor and chronology audit\n\nGenerated: ",
+                        # Pre-rename report title: recognized only so older reports can be replaced.
                         "# lerobot-doctor: numerical processor and chronology audit\n\nGenerated: ",
                         "# LeRobot Hub checkpoint audit\n\nGenerated: ",
                     )
