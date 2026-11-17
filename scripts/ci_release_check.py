@@ -138,6 +138,22 @@ values = load_file(state_file)
 values["action.std"][[2, 6]] *= 1.5
 save_file(values, state_file)
 (candidate / "config.json").write_text(json.dumps({**policy, "n_action_steps": 100}), encoding="utf-8")
+conflict = root / "action_stats_conflict"
+shutil.copytree(root / "clean", conflict)
+post_config = json.loads((conflict / "policy_postprocessor.json").read_text())
+state_file = conflict / post_config["steps"][0]["state_file"]
+values = load_file(state_file)
+values["action.std"][3] = 1e9
+save_file(values, state_file)
+pre = PolicyProcessorPipeline.from_pretrained(
+    conflict, config_filename="policy_preprocessor.json", local_files_only=True)
+post = PolicyProcessorPipeline.from_pretrained(
+    conflict, config_filename="policy_postprocessor.json", local_files_only=True)
+raw_action = torch.full((1, 14), .4)
+restored = post(pre({"action": raw_action}))["action"]
+assert restored[0, 3] > 1e8
+observed["action_stats_conflict"] = {"native_output_coordinate_3": float(restored[0, 3]),
+                                     "raw_input_coordinate_3": float(raw_action[0, 3])}
 np.savez(root / "invalid_shape.npz", **{"observation.state": np.zeros((1, 1), dtype=np.float32)})
 (root / "native_ground_truth.json").write_text(json.dumps(observed, indent=2), encoding="utf-8")
 assert not any(name == "lerobot_flinch" or name.startswith("lerobot_flinch.") for name in __import__("sys").modules)
@@ -407,6 +423,7 @@ def main(argv: list[str] | None = None) -> int:
                     checks: tuple[str, ...] = (),
                     *,
                     sample: bool = True,
+                    conflicts: tuple[str, ...] = (),
                     extra: tuple[str | Path, ...] = (),
                 ) -> None:
                     report = results / f"{name}.report.json"
@@ -433,6 +450,18 @@ def main(argv: list[str] | None = None) -> int:
                             ),
                             list(checks),
                         )
+                        if conflicts:
+                            validate(
+                                name + "_conflict_check_ids",
+                                all(
+                                    any(
+                                        finding["check_id"] == check and finding["status"] == "CONFLICT"
+                                        for finding in findings
+                                    )
+                                    for check in conflicts
+                                ),
+                                list(conflicts),
+                            )
                     except (OSError, KeyError, ValueError) as exc:
                         validate(name + "_json_report", False, str(exc))
 
@@ -441,6 +470,13 @@ def main(argv: list[str] | None = None) -> int:
                 case("silent_bypass", "silent_bypass", 1, ("SILENT_STEP_BYPASS",))
                 case("pathological_gain", "pathological_gain", 1, ("EMPIRICAL_GAIN_EXPLOSION",))
                 case("fp16_nan", "fp16_nan", 1, ("RUNTIME_NON_FINITE",))
+                case(
+                    "action_stats_conflict",
+                    "action_stats_conflict",
+                    1,
+                    sample=False,
+                    conflicts=("ACTION_STATS_CONFLICT",),
+                )
                 case("oldest_first", "oldest_first", 1, ("TEMPORAL_ANCHOR_MISMATCH",))
                 for name in ("current_first", "current_first_normalized"):
                     case(name, name, 0)
@@ -471,7 +507,22 @@ def main(argv: list[str] | None = None) -> int:
                     graph = results / f"processor_graph.{extension}"
                     case("graph_" + extension, "clean", 0, extra=("--graph", graph))
                     validate("graph_" + extension + "_created", graph.is_file())
-                case("missing_checkpoint", "missing", 1, ("SCHEMA_GENERATION",), sample=False)
+                (fixtures / "empty").mkdir()
+                case("empty_checkpoint", "empty", 1, ("SCHEMA_GENERATION",), sample=False)
+                missing_report = results / "missing_checkpoint.report.json"
+                run(
+                    "missing_checkpoint",
+                    [console, "--policy", fixtures / "missing", "--report", missing_report],
+                    2,
+                )
+                missing_error = (results / "missing_checkpoint.stderr.txt").read_text(encoding="utf-8")
+                validate(
+                    "missing_checkpoint_usage_error",
+                    "--policy" in missing_error
+                    and "does not exist" in missing_error
+                    and "Traceback" not in missing_error
+                    and not missing_report.exists(),
+                )
                 validate(
                     "checkpoint_inputs_unchanged",
                     hashes

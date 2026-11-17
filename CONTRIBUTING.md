@@ -27,7 +27,7 @@ python -m mypy
 These are what keep Flinch's answers trustworthy. Please stick to them.
 
 1. **Read LeRobot's code, don't guess it.** Before you touch a check, open the installed `lerobot/processor/` source and look at how the step really behaves and what it saves. Class names, JSON keys and formulas change between versions.
-2. **Use LeRobot's own pipeline.** Load checkpoints with `PolicyProcessorPipeline` and watch them with its hooks. Don't copy a normalization formula into Flinch, because a copy can drift from the real thing.
+2. **Use LeRobot's own pipeline.** Load checkpoints with `PolicyProcessorPipeline` and watch them with its hooks. Don't invent a parallel processor implementation. Static and legacy checks must use arithmetic verified against the inspected upstream code.
 3. **Look, never act.** Checks are read-only. No motor commands, no simulator, no network calls while checking. Only the Hub downloader talks to the network, and it runs before any check starts.
 4. **Use the right label.** `FAIL` needs evidence and has to point at the exact step, key and coordinates. `CONFLICT` means two files disagree. `UNKNOWN` means Flinch couldn't tell. When in doubt, say `UNKNOWN`.
 5. **Never guess units.** A tensor's shape can't tell you radians from degrees, or which frame an action is in. Leave it `UNKNOWN` unless the user declares it.

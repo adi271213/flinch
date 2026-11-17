@@ -1486,7 +1486,7 @@ def _gain_finding(
 
 
 # Un-normalizing multiplies every policy output by the saved action scale. Above this numeric
-# scale an advisory is raised; units are undeclared, so it is never a FAIL on its own.
+# scale an advisory is raised; scale alone does not establish physical execution limits.
 EXTREME_ACTION_SCALE = 1e6
 
 
@@ -1497,49 +1497,352 @@ def _record_action_stats(
     entry: dict[str, Any],
     index: int,
     state: dict[str, torch.Tensor],
+    *,
+    state_path: Path,
 ) -> None:
-    """Remember the active ``action`` statistics of one native (un)normalizer step."""
+    """Record the native ACTION path, which does not depend on ``features``."""
     step_config = entry.get("config", {})
     norm_map = step_config.get("norm_map", {}) if isinstance(step_config, dict) else {}
-    try:
-        mode = NormalizationMode(norm_map.get(FeatureType.ACTION.value, NormalizationMode.IDENTITY.value))
-    except ValueError:
-        return
+    mode = NormalizationMode(norm_map.get(FeatureType.ACTION.value, NormalizationMode.IDENTITY.value))
     required = _MODE_STATS.get(mode, ())
-    keys = [f"action.{stat}" for stat in required]
-    if not required or not all(key in state for key in keys):
+    if not required or not all(f"action.{stat}" in state for stat in required):
         return
+    cls = _normalization_base(entry)
+    assert cls is not None and cls in _NORMALIZERS
+    step = cls(**{**step_config, "device": "cpu"})
+    step.load_state_dict(state)
+    source = path if "action" in (step_config.get("stats") or {}) else state_path
     records.append(
         {
-            "direction": "inverse" if _normalization_base(entry) is UnnormalizerProcessorStep else "forward",
+            "direction": "inverse" if cls is UnnormalizerProcessorStep else "forward",
             "role": _role(path, config),
-            "path": path,
+            "path": source,
+            "config_path": path,
+            "config": config,
+            "entry": entry,
+            "step": step,
             "index": index,
             "name": entry.get("registry_name", entry.get("class", path.stem)),
             "mode": mode,
+            "dtype": _input_float_dtype(config["steps"], index) or "float32",
             "stats": {stat: state[f"action.{stat}"].detach().double() for stat in required},
         }
     )
 
 
+def _action_stat_mask(record: dict[str, Any], tensor: torch.Tensor) -> torch.Tensor:
+    """Mirror the inspected Molmo mixin's optional one-dimensional feature mask."""
+    active = torch.ones_like(tensor, dtype=torch.bool)
+    if record["entry"].get("registry_name") not in _MASKED_NORMALIZERS:
+        return active
+    mask = record["step"].state_dict().get("action.mask")
+    declaration = _normalizer_features(record["entry"], record["step"].state_dict()).get("action", {})
+    shape = declaration.get("shape", [])
+    if mask is None or mask.ndim != 1 or not shape or shape[-1] != mask.numel():
+        return active  # The native mixin ignores an unbroadcastable mask.
+    mask = mask.bool()
+    if tensor.ndim and tensor.shape[-1] == mask.numel():
+        return torch.broadcast_to(mask, tensor.shape)
+    # A scalar stat is shared by all coordinates: it is active if any of those
+    # coordinates is normalized. Indices still refer to saved tensor elements.
+    return torch.full_like(active, bool(mask.any()))
+
+
 def _action_scale(record: dict[str, Any]) -> torch.Tensor:
     stats = record["stats"]
+    dtype = DeviceProcessorStep.DTYPE_MAPPING[record["dtype"]]
     if record["mode"] is NormalizationMode.MEAN_STD:
-        return stats["std"].abs()
-    low, high = (stats[stat] for stat in _MODE_STATS[record["mode"]])
-    return ((high - low) / 2).abs()
+        scale = stats["std"].to(dtype).double().abs()
+    else:
+        low, high = (stats[stat].to(dtype) for stat in _MODE_STATS[record["mode"]])
+        span = high - low
+        scale = torch.where(span == 0, torch.full_like(span, record["step"].eps), span).double().abs() / 2
+    return torch.where(_action_stat_mask(record, scale), scale, torch.ones_like(scale))
+
+
+def _action_stat_location(into: dict[str, Any], out: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "preprocessor_file": into["config_path"].name,
+        "preprocessor_step_index": into["index"],
+        "postprocessor_file": out["config_path"].name,
+        "postprocessor_step_index": out["index"],
+        "step_index": out["index"],
+        "feature_key": "action",
+        "preprocessor_dtype": into["dtype"],
+        "postprocessor_dtype": out["dtype"],
+        "preprocessor_provenance": _provenance(into["path"], into["name"], "action").to_dict(),
+    }
+
+
+def _compare_single_action_stats(report: PreflightReport, into: dict[str, Any], out: dict[str, Any]) -> None:
+    location = _action_stat_location(into, out)
+    if into["mode"] is not out["mode"]:
+        _add(
+            report,
+            "ACTION_STATS_CONFLICT",
+            DiagnosticStatus.CONFLICT,
+            f"Serialized action modes disagree: {into['mode'].value} in the preprocessor and "
+            f"{out['mode'].value} in the postprocessor.",
+            {**location, "preprocessor_mode": into["mode"].value, "postprocessor_mode": out["mode"].value},
+            _provenance(out["path"], out["name"], "action"),
+        )
+        return
+    declared_features = [
+        record["entry"].get("config", {}).get("features", {}).get("action") for record in (into, out)
+    ]
+    shapes = [
+        tuple(feature["shape"]) if isinstance(feature, dict) and feature.get("type") == "ACTION" else None
+        for feature in declared_features
+    ]
+    if shapes[0] is not None and shapes[1] is not None and shapes[0] != shapes[1]:
+        _add(
+            report,
+            "ACTION_STATS_CONFLICT",
+            DiagnosticStatus.CONFLICT,
+            "Serialized preprocessor and postprocessor declare different action feature shapes.",
+            {**location, "preprocessor_shape": list(shapes[0]), "postprocessor_shape": list(shapes[1])},
+            _provenance(out["path"], out["name"], "action"),
+        )
+        return
+    shape = shapes[0] if shapes[0] == shapes[1] else None
+    expanded: dict[str, tuple[torch.Tensor, torch.Tensor]] = {}
+    for stat in _MODE_STATS[out["mode"]]:
+        declared, used = into["stats"][stat], out["stats"][stat]
+        original_shapes = (list(declared.shape), list(used.shape))
+        try:
+            if shape is not None:
+                while declared.ndim > len(shape) and declared.shape[0] == 1:
+                    declared = declared.squeeze(0)
+                while used.ndim > len(shape) and used.shape[0] == 1:
+                    used = used.squeeze(0)
+                declared, used = torch.broadcast_to(declared, shape), torch.broadcast_to(used, shape)
+            elif declared.shape != used.shape:
+                raise ValueError("No matching declared action shape validates different buffer layouts")
+        except (RuntimeError, ValueError) as exc:
+            _add(
+                report,
+                "ACTION_STATS_CONFLICT",
+                DiagnosticStatus.CONFLICT,
+                f"action.{stat} buffers do not share a compatible declared action shape: {exc}",
+                {
+                    **location,
+                    "statistic": stat,
+                    "preprocessor_shape": original_shapes[0],
+                    "postprocessor_shape": original_shapes[1],
+                },
+                _provenance(out["path"], out["name"], f"action.{stat}"),
+            )
+            continue
+        expanded[stat] = (declared, used)
+        if stat == _MODE_STATS[out["mode"]][0]:
+            before_mask, after_mask = _action_stat_mask(into, declared), _action_stat_mask(out, used)
+            indices = (before_mask != after_mask).reshape(-1).nonzero().flatten().tolist()
+            if indices:
+                _add(
+                    report,
+                    "ACTION_STATS_CONFLICT",
+                    DiagnosticStatus.CONFLICT,
+                    "Serialized preprocessor and postprocessor action normalization masks disagree.",
+                    {
+                        **location,
+                        "statistic": "mask",
+                        "preprocessor_values": before_mask.reshape(-1)[indices].tolist(),
+                        "postprocessor_values": after_mask.reshape(-1)[indices].tolist(),
+                        "tensor_slice": after_mask.reshape(-1)[indices].tolist(),
+                    },
+                    _provenance(out["path"], out["name"], "action.mask", indices),
+                )
+        # Compare the expected and saved inverse constants in the postprocessor's
+        # effective dtype. Native forward MEAN_STD adds eps but inverse does not;
+        # that intentional same-stat round-trip loss is not a stat conflict.
+        dtype = DeviceProcessorStep.DTYPE_MAPPING[out["dtype"]]
+        expected, actual = declared.to(dtype).double(), used.to(dtype).double()
+        ulps = 8 if dtype is torch.float32 else 2
+        tolerance = torch.maximum(expected.abs(), actual.abs()) * torch.finfo(dtype).eps * ulps
+        active = _action_stat_mask(into, declared) | _action_stat_mask(out, used)
+        differs = ((expected - actual).abs() > tolerance) & active
+        if not bool(differs.any()):
+            continue
+        indices = differs.reshape(-1).nonzero().flatten().tolist()
+        declared_values = declared.reshape(-1)[indices].tolist()
+        used_values = used.reshape(-1)[indices].tolist()
+        _add(
+            report,
+            "ACTION_STATS_CONFLICT",
+            DiagnosticStatus.CONFLICT,
+            f"Serialized action.{stat} disagrees between preprocessor and postprocessor at indices {indices} "
+            f"(e.g. {declared_values[0]:.6g} vs {used_values[0]:.6g}).",
+            {
+                **location,
+                "normalization_mode": out["mode"].value,
+                "statistic": stat,
+                "preprocessor_values": declared_values,
+                "postprocessor_values": used_values,
+                "tensor_slice": used_values,
+            },
+            _provenance(out["path"], out["name"], f"action.{stat}", indices),
+        )
+
+    if out["mode"] is not NormalizationMode.MEAN_STD:
+        low, high = _MODE_STATS[out["mode"]]
+        dtype = DeviceProcessorStep.DTYPE_MAPPING[out["dtype"]]
+        if low not in expanded or high not in expanded:
+            return  # Shape conflicts above already retain the incompatible evidence.
+        declared_low, declared_high = (expanded[stat][0].to(dtype) for stat in (low, high))
+        used_low, used_high = (expanded[stat][1].to(dtype) for stat in (low, high))
+        if declared_low.shape == used_low.shape and declared_high.shape == used_high.shape:
+            expected_span = declared_high - declared_low
+            used_span = used_high - used_low
+            expected_span = torch.where(
+                expected_span == 0, torch.full_like(expected_span, into["step"].eps), expected_span
+            )
+            used_span = torch.where(used_span == 0, torch.full_like(used_span, out["step"].eps), used_span)
+            tolerance = (
+                torch.maximum(expected_span.abs(), used_span.abs()).double() * torch.finfo(dtype).eps * 8
+            )
+            active = _action_stat_mask(into, expected_span) | _action_stat_mask(out, used_span)
+            differs = ((expected_span.double() - used_span.double()).abs() > tolerance) & active
+            indices = differs.reshape(-1).nonzero().flatten().tolist()
+            if indices and into["step"].eps != out["step"].eps:
+                _add(
+                    report,
+                    "ACTION_STATS_CONFLICT",
+                    DiagnosticStatus.CONFLICT,
+                    "Serialized inverse range scales disagree because zero spans use different eps values.",
+                    {
+                        **location,
+                        "normalization_mode": out["mode"].value,
+                        "statistic": "effective_span",
+                        "preprocessor_eps": into["step"].eps,
+                        "postprocessor_eps": out["step"].eps,
+                        "preprocessor_values": expected_span.double().reshape(-1)[indices].tolist(),
+                        "postprocessor_values": used_span.double().reshape(-1)[indices].tolist(),
+                        "tensor_slice": used_span.double().reshape(-1)[indices].tolist(),
+                    },
+                    _provenance(out["path"], out["name"], f"action.{high}", indices),
+                )
+
+
+def _compare_composed_action_stats(
+    report: PreflightReport, before: list[dict[str, Any]], after: list[dict[str, Any]]
+) -> None:
+    """Compare native inverse maps, not the Cartesian product of individual stages."""
+    into, out = before[0], after[-1]
+    location = _action_stat_location(into, out)
+    contributors = [
+        {
+            "processor_file": record["config_path"].name,
+            "step_index": record["index"],
+            "direction": record["direction"],
+            "dtype": record["dtype"],
+            "provenance": _provenance(record["path"], record["name"], "action").to_dict(),
+        }
+        for record in [*before, *after]
+    ]
+    try:
+        if (
+            len({record["config_path"] for record in before}) != 1
+            or len({record["config_path"] for record in after}) != 1
+        ):
+            raise ValueError("Multiple processor files declare the same action role")
+        declarations = [
+            _normalizer_features(record["entry"], record["step"].state_dict())["action"]
+            for record in [*before, *after]
+        ]
+        shape = tuple(declarations[0]["shape"])
+        if any(tuple(declaration["shape"]) != shape for declaration in declarations):
+            raise ValueError("Composed action stages declare different feature shapes")
+        if not shape or math.prod(shape) > 100_000:
+            raise ValueError("No bounded declared action probe shape is available")
+        points = torch.tensor([-3.0, -1.0, 0.0, 1.0, 3.0]).reshape((-1,) + (1,) * len(shape))
+        probes = points.expand((-1,) + shape).clone()
+        snapshots = _native_normalization_probe(
+            into["config"]["steps"], {record["index"]: record["step"] for record in before}, "action", probes
+        )
+        if any(not torch.isfinite(snapshot["output"]).all() for snapshot in snapshots):
+            raise ValueError("Preprocessor action probes are non-finite; numeric findings retain attribution")
+        # Build the expected native inverse of the serialized preprocessing stages.
+        # It uses native inverse arithmetic, including its intentional eps semantics.
+        expected_entries, expected_steps = [], {}
+        for record in reversed(before):
+            device = DeviceProcessorStep(device="cpu", float_dtype=record["dtype"])
+            expected_entries.append({"registry_name": "device_processor", "config": device.get_config()})
+            cls = UnnormalizerProcessorStep if record["direction"] == "forward" else NormalizerProcessorStep
+            step = cls(**{**record["step"].get_config(), "device": "cpu"})
+            step.load_state_dict(record["step"].state_dict())
+            index = len(expected_entries)
+            expected_steps[index] = step
+            expected_entries.append(
+                {
+                    "registry_name": "unnormalizer_processor"
+                    if cls is UnnormalizerProcessorStep
+                    else "normalizer_processor",
+                    "config": step.get_config(),
+                }
+            )
+        expected = _native_normalization_probe(expected_entries, expected_steps, "action", probes)
+        actual = _native_normalization_probe(
+            out["config"]["steps"], {record["index"]: record["step"] for record in after}, "action", probes
+        )
+        if not expected or not actual:
+            raise ValueError("The complete native inverse action mapping was not available")
+        if any(not torch.isfinite(snapshot["output"]).all() for snapshot in [*expected, *actual]):
+            raise ValueError("Inverse action probes are non-finite; numeric findings retain attribution")
+        left, right = expected[-1]["output"].double(), actual[-1]["output"].double()
+        if left.shape != right.shape:
+            raise ValueError("Native composed action outputs have different shapes")
+        scale = torch.maximum(left.abs(), right.abs()).clamp_min(1)
+        tolerance = torch.zeros_like(scale)
+        for snapshot in [*expected, *actual]:
+            dtype = snapshot["output"].dtype
+            magnitude = snapshot["output"].double().abs().clamp_min(1)
+            if magnitude.shape == scale.shape:
+                tolerance = torch.maximum(tolerance, magnitude * torch.finfo(dtype).eps * 8)
+        differs = (left - right).abs() > torch.maximum(tolerance, scale * 1e-6)
+        coordinates = differs.reshape((5, -1)).any(0).nonzero().flatten().tolist()
+    except (ValueError, RuntimeError, KeyError, TypeError, AttributeError) as exc:
+        _add(
+            report,
+            "ACTION_STATS_CONFLICT",
+            DiagnosticStatus.UNKNOWN,
+            f"Composed action contract comparison is unavailable: {exc}",
+            {
+                **location,
+                "reason": str(exc),
+                "comparison_scope": "composed_native_action_inverse",
+                "contributing_stages": contributors,
+                "required_coverage": True,
+            },
+            _provenance(out["path"], out["name"], "action"),
+            severity=Severity.WARNING,
+        )
+        return
+    _add(
+        report,
+        "ACTION_STATS_CONFLICT",
+        DiagnosticStatus.CONFLICT if coordinates else DiagnosticStatus.PASS,
+        "Composed serialized action inverse mappings disagree."
+        if coordinates
+        else "Composed serialized action inverse mappings agree under native arithmetic.",
+        {
+            **location,
+            "comparison_scope": "composed_native_action_inverse",
+            "contributing_stages": contributors,
+            "probe_values": [-3.0, -1.0, 0.0, 1.0, 3.0],
+            "expected_outputs": left.reshape(5, -1)[:, coordinates].tolist(),
+            "postprocessor_outputs": right.reshape(5, -1)[:, coordinates].tolist(),
+            "tensor_slice": right.reshape(5, -1)[:, coordinates].tolist(),
+        },
+        _provenance(out["path"], out["name"], "action", coordinates),
+        severity=Severity.CRITICAL if coordinates else Severity.INFO,
+    )
 
 
 def _compare_action_stats(report: PreflightReport, records: list[dict[str, Any]]) -> None:
-    """Training normalizes actions with the same statistics inference uses to un-normalize them.
-
-    LeRobot builds both processors from one dataset's statistics, so a disagreement between the
-    preprocessor's action normalizer and the postprocessor's action un-normalizer means policy
-    outputs are rescaled by a factor the policy was never trained with.
-    """
-    forward = [record for record in records if record["direction"] == "forward"]
-    inverse = [record for record in records if record["direction"] == "inverse"]
-    for out in inverse:
+    """Compare serialized contracts without asserting unverified training history."""
+    for out in records:
+        if out["direction"] != "inverse" or out["role"] != "post":
+            continue
         scale = _action_scale(out)
         extreme = torch.isfinite(scale) & (scale > EXTREME_ACTION_SCALE)
         if bool(extreme.any()):
@@ -1551,83 +1854,34 @@ def _compare_action_stats(report: PreflightReport, records: list[dict[str, Any]]
                 "EXTREME_ACTION_SCALE",
                 DiagnosticStatus.UNKNOWN,
                 f"Un-normalization multiplies policy outputs by up to {max(values):.3g} at action indices "
-                f"{indices}. Units are undeclared, so this is not a failure on its own; check the saved "
-                "action statistics.",
+                f"{indices}. Scale alone does not establish a physical safety limit; inspect the "
+                "serialized action statistics.",
                 {
                     "step_index": out["index"],
                     "feature_key": "action",
                     "normalization_mode": out["mode"].value,
                     "action_scale_statistic": stat,
                     "action_scale_values": values,
+                    "eps": out["step"].eps,
+                    "effective_dtype": out["dtype"],
                     "extreme_action_scale_threshold": EXTREME_ACTION_SCALE,
                     "tensor_slice": values,
                 },
                 _provenance(out["path"], out["name"], f"action.{_MODE_STATS[out['mode']][-1]}", indices),
                 severity=Severity.WARNING,
             )
-        for into in forward:
-            if into["role"] == out["role"]:
-                continue
-            location = {
-                "preprocessor_file": into["path"].name,
-                "preprocessor_step_index": into["index"],
-                "postprocessor_file": out["path"].name,
-                "postprocessor_step_index": out["index"],
-                "step_index": out["index"],
-                "feature_key": "action",
-            }
-            if into["mode"] is not out["mode"]:
-                _add(
-                    report,
-                    "ACTION_STATS_CONFLICT",
-                    DiagnosticStatus.CONFLICT,
-                    f"Actions are normalized with {into['mode'].value} but un-normalized with "
-                    f"{out['mode'].value}; policy outputs will not be mapped back to the training scale.",
-                    {
-                        **location,
-                        "preprocessor_mode": into["mode"].value,
-                        "postprocessor_mode": out["mode"].value,
-                    },
-                    _provenance(out["path"], out["name"], "action"),
-                )
-                continue
-            for stat in _MODE_STATS[out["mode"]]:
-                try:
-                    trained, used = torch.broadcast_tensors(into["stats"][stat], out["stats"][stat])
-                except RuntimeError:
-                    _add(
-                        report,
-                        "ACTION_STATS_CONFLICT",
-                        DiagnosticStatus.CONFLICT,
-                        f"action.{stat} has shape {list(into['stats'][stat].shape)} in the preprocessor but "
-                        f"{list(out['stats'][stat].shape)} in the postprocessor.",
-                        location,
-                        _provenance(out["path"], out["name"], f"action.{stat}"),
-                    )
-                    continue
-                differs = ~torch.isclose(trained, used, rtol=1e-4, atol=1e-6, equal_nan=True)
-                if not bool(differs.any()):
-                    continue
-                indices = differs.reshape(-1).nonzero().flatten().tolist()
-                trained_values = trained.reshape(-1)[indices].tolist()
-                used_values = used.reshape(-1)[indices].tolist()
-                _add(
-                    report,
-                    "ACTION_STATS_CONFLICT",
-                    DiagnosticStatus.CONFLICT,
-                    f"action.{stat} differs between the preprocessor and the postprocessor at indices "
-                    f"{indices} (e.g. {trained_values[0]:.6g} vs {used_values[0]:.6g}). Policy outputs "
-                    "will be un-normalized with statistics the policy was not trained on.",
-                    {
-                        **location,
-                        "normalization_mode": out["mode"].value,
-                        "statistic": stat,
-                        "preprocessor_values": trained_values,
-                        "postprocessor_values": used_values,
-                        "tensor_slice": used_values,
-                    },
-                    _provenance(out["path"], out["name"], f"action.{stat}", indices),
-                )
+    before = [record for record in records if record["role"] == "pre"]
+    after = [record for record in records if record["role"] == "post"]
+    if not before or not after:
+        return
+    if (
+        len(before) == len(after) == 1
+        and before[0]["direction"] == "forward"
+        and after[0]["direction"] == "inverse"
+    ):
+        _compare_single_action_stats(report, before[0], after[0])
+    else:
+        _compare_composed_action_stats(report, before, after)
 
 
 def _screen_normalizer_state(
@@ -2775,7 +3029,7 @@ def run_preflight(
                         _input_float_dtype(config["steps"], index),
                         config_path=path,
                     )
-                _record_action_stats(action_stats, path, config, entry, index, state)
+                _record_action_stats(action_stats, path, config, entry, index, state, state_path=state_path)
                 missing = [key for key in required_keys if key not in state]
                 if missing:
                     coverage_gaps.append(

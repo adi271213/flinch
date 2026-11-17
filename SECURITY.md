@@ -9,7 +9,7 @@ Some protections are built in:
 - Flinch only builds processor steps it knows and has inspected. It never imports code from a checkpoint.
 - `.npz` samples are loaded with pickle turned off, and tensors are read with `safetensors`.
 - File paths inside a checkpoint can't escape the checkpoint folder. `../` and symlinks pointing outside are rejected.
-- `--report` and `--graph` won't overwrite a file that isn't an earlier Flinch output, and won't write through a symlink.
+- `--report` and `--graph` won't overwrite a file that isn't an earlier Flinch output, and reject symlink destinations. These checks do not reject every symlink in a parent directory or protect against concurrent filesystem changes.
 - With `hf://`, Flinch only downloads public, ungated repos, pinned to an exact commit. It enforces size limits on every file and never downloads model weights. It doesn't need or send a Hugging Face token.
 
 Flinch isn't a sandbox, though. If you're checking a checkpoint you don't trust, or one that might change while you check it, copy it somewhere stable first. A very large local file can still use a lot of memory.
