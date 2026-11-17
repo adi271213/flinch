@@ -1197,7 +1197,7 @@ def _portable_report(report: dict[str, Any], *, report_dir: Path | None = None) 
                 value = value.replace("\\", "/")
             # Redact unrelated home paths that may occur inside recorded errors.
             value = re.sub(r"/Users/[^/\s\"'<>]+/", "local-artifacts/", value)
-            return re.sub(r"[A-Za-z]:[\\/]Users[\\/][^\\/\s\"'<>]+[\\/]", "local-artifacts/", value)
+            return re.sub(r"(?:[A-Za-z]:)?[\\/]Users[\\/][^\\/\s\"'<>]+[\\/]", "local-artifacts/", value)
         return value
 
     exported = convert(report)

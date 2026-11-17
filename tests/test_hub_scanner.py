@@ -1289,11 +1289,14 @@ def test_portable_report_exports_windows_paths_without_machine_prefix(checkpoint
                             "checkpoint_dir": checkpoint}],
                 "project_root": "C:/Work Tree/preflight",
                 "recorded_error": r"missing C:\Users\example\.cache\artifact",
+                "nested_home_error": r"C:\Users\outer\Temp\bundle\Users\private-user\snapshot\stats.safetensors",
                 "unrelated_pattern": r"\d+\s"}
     result = hub_scanner._portable_report(original)
     assert result["repos"][0]["checkpoint_dir"] == ".hub_audit_snapshots/org-lowstd"
     assert result["project_root"] == "."
     assert "Users" not in result["recorded_error"]
+    assert "\\Users\\private-user\\" not in result["nested_home_error"]
+    assert "private-user" not in result["nested_home_error"]
     assert result["unrelated_pattern"] == original["unrelated_pattern"]
     assert original["repos"][0]["checkpoint_dir"] == checkpoint
     # A neighboring project sharing a string prefix must not be truncated.
