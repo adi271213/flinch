@@ -27,9 +27,9 @@ from lerobot.processor import (
 )
 from lerobot.processor.relative_action_processor import to_absolute_actions, to_relative_actions
 
-from lerobot_preflight.models import DiagnosticStatus
-from lerobot_preflight.temporal import run_temporal_audit
-from lerobot_preflight.trace import run_offline_trace
+from lerobot_flinch.models import DiagnosticStatus
+from lerobot_flinch.temporal import run_temporal_audit
+from lerobot_flinch.trace import run_offline_trace
 from tests.fixtures.make_bug_fixtures import make_bug_fixtures
 from tests.subprocess_env import source_subprocess_env
 
@@ -103,7 +103,7 @@ def test_uninspected_step_blocks_native_loading_before_any_constructor(
 def test_native_hooks_are_unregistered_after_offline_trace(
     checkpoints: dict[str, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import lerobot_preflight.trace as trace_module
+    import lerobot_flinch.trace as trace_module
 
     checkpoint = checkpoints["clean_act_modern"]
     loaded = []
@@ -456,7 +456,7 @@ def test_vla_trace_stubs_only_language_and_executes_native_numeric_steps_read_on
     checkpoints: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import lerobot_preflight.trace as trace_module
+    import lerobot_flinch.trace as trace_module
 
     checkpoint = checkpoints["clean_act_modern"]
     _add_vla_language_steps(checkpoint)
@@ -601,7 +601,7 @@ def test_strict_shared_loader_does_not_silently_stub_language_for_temporal_audit
     checkpoints: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import lerobot_preflight.trace as trace_module
+    import lerobot_flinch.trace as trace_module
 
     checkpoint = checkpoints["clean_act_modern"]
     _add_vla_language_steps(checkpoint)
@@ -869,8 +869,8 @@ if hasattr(renames, "rename_keys"):
 def no_network(*args, **kwargs):
     raise AssertionError("compatibility import attempted network access")
 socket.socket = socket.create_connection = no_network
-from lerobot_preflight.cli import main
-from lerobot_preflight.trace import rename_keys
+from lerobot_flinch.cli import main
+from lerobot_flinch.trace import rename_keys
 marker = object()
 assert rename_keys({"raw": marker}, {"raw": "observation.state"}) == {"observation.state": marker}
 assert rename_keys({"raw_is_pad": marker}, {"raw": "observation.state"}) == {"observation.state_is_pad": marker}
@@ -1085,7 +1085,7 @@ def test_missing_active_state_sample_cannot_borrow_action_coverage(
     monkeypatch,
     extra_observation,
 ) -> None:
-    import lerobot_preflight.trace as trace_module
+    import lerobot_flinch.trace as trace_module
 
     checkpoint = checkpoints["clean_act_modern"]
     sample = {"action": np.full((1, 14), 0.4, dtype=np.float32)}
@@ -1243,7 +1243,7 @@ def test_sample_shape_cannot_broadcast_a_narrow_state_across_declared_features(
     monkeypatch,
     shape,
 ):
-    import lerobot_preflight.trace as trace_module
+    import lerobot_flinch.trace as trace_module
 
     checkpoint = checkpoints["clean_act_modern"]
     path = tmp_path / "bad_shape.npz"

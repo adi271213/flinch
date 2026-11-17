@@ -8,7 +8,7 @@ from copy import deepcopy
 
 import pytest
 
-from lerobot_preflight import hub_scanner
+from lerobot_flinch import hub_scanner
 
 
 def _finding(

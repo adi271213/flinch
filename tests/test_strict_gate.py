@@ -5,8 +5,8 @@ import json
 import numpy as np
 import pytest
 
-from lerobot_preflight import cli, privilege_delta
-from lerobot_preflight.models import DiagnosticFinding, DiagnosticStatus, PreflightReport, Severity
+from lerobot_flinch import cli, privilege_delta
+from lerobot_flinch.models import DiagnosticFinding, DiagnosticStatus, PreflightReport, Severity
 from tests.fixtures.make_bug_fixtures import make_bug_fixtures
 
 

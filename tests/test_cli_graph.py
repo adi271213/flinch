@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from lerobot_preflight.cli import main
+from lerobot_flinch.cli import main
 from tests.fixtures.make_bug_fixtures import make_bug_fixtures
 
 
@@ -71,7 +71,7 @@ def test_cli_graph_rejects_unsupported_export_format(checkpoints, tmp_path, caps
 
 
 def test_cli_forwards_explicit_chronology_to_graph(checkpoints, tmp_path, monkeypatch):
-    from lerobot_preflight import graph
+    from lerobot_flinch import graph
 
     checkpoint = checkpoints["clean_act_modern"]
     metadata = tmp_path / "chronology.json"

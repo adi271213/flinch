@@ -233,7 +233,7 @@ def _finding_context(finding: DiagnosticFinding) -> str:
 
 
 def _print_report(report: PreflightReport) -> None:
-    print(f"lerobot-preflight: {report.checkpoint_dir}")
+    print(f"flinch: {report.checkpoint_dir}")
     if report.strict or report.baseline_requested:
         print(
             "Gate policy: required UNKNOWN findings and WARNING advisories fail; informational physical notes are exempt (--strict)."
@@ -293,7 +293,7 @@ def _write_report(path: Path, report: PreflightReport) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="lerobot-preflight", description=__doc__)
+    parser = argparse.ArgumentParser(prog="flinch", description=__doc__)
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument(
         "--policy",
@@ -346,7 +346,7 @@ def main(argv: list[str] | None = None) -> int:
             baseline = stack.enter_context(resolve_checkpoint(args.baseline)) if args.baseline else None
             return _run_resolved(args, policy, baseline)
     except HubSourceError as exc:
-        print(f"lerobot-preflight: {exc}", file=sys.stderr)
+        print(f"flinch: {exc}", file=sys.stderr)
         return 1
 
 

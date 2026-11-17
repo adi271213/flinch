@@ -43,9 +43,10 @@ from .preflight import (
     _verified_legacy_values,
 )
 
-_FORMAT = "lerobot-preflight-processor-lineage-v1"
-# Pre-rename graph exports remain readable; new exports always use _FORMAT.
-_LEGACY_FORMAT = "lerobot-doctor-processor-lineage-v1"
+_FORMAT = "flinch-processor-lineage-v1"
+# Exports from earlier releases (lerobot-doctor, lerobot-preflight) remain readable;
+# new exports always use _FORMAT.
+_LEGACY_FORMATS = ("lerobot-preflight-processor-lineage-v1", "lerobot-doctor-processor-lineage-v1")
 _MARKER = "%% " + _FORMAT
 _BUFFER_BUDGET = 5 * 1024 * 1024
 
@@ -851,16 +852,17 @@ def write_processor_graph(graph: dict[str, Any], output_path: Path) -> Path:
         previous = path.read_text(encoding="utf-8")
         try:
             recognized = (
-                json.loads(previous).get("format") in {_FORMAT, _LEGACY_FORMAT}
+                json.loads(previous).get("format") in {_FORMAT, *_LEGACY_FORMATS}
                 if suffix == ".json"
                 else (
                     any(
                         previous.startswith("flowchart LR\n%% " + marker)
-                        for marker in (_FORMAT, _LEGACY_FORMAT)
+                        for marker in (_FORMAT, *_LEGACY_FORMATS)
                     )
                     if suffix == ".mmd"
                     else any(
-                        previous.startswith("<!-- " + marker + " -->") for marker in (_FORMAT, _LEGACY_FORMAT)
+                        previous.startswith("<!-- " + marker + " -->")
+                        for marker in (_FORMAT, *_LEGACY_FORMATS)
                     )
                 )
             )

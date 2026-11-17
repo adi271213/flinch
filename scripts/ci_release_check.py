@@ -24,10 +24,10 @@ _ORIGINS = r"""
 from pathlib import Path
 import importlib.metadata as metadata
 import hashlib, json, os, site, sys
-import lerobot, lerobot_preflight, torch
+import lerobot, lerobot_flinch, torch
 from lerobot.processor import NormalizerProcessorStep, PolicyProcessorPipeline
 prefix, checkout = Path(sys.prefix).resolve(), Path(sys.argv[1]).resolve()
-origins = {"lerobot": lerobot.__file__, "lerobot_preflight": lerobot_preflight.__file__, "torch": torch.__file__}
+origins = {"lerobot": lerobot.__file__, "lerobot_flinch": lerobot_flinch.__file__, "torch": torch.__file__}
 assert sys.prefix != sys.base_prefix
 assert not site.ENABLE_USER_SITE
 assert "PYTHONPATH" not in os.environ
@@ -35,7 +35,7 @@ assert all(Path(path).resolve().is_relative_to(prefix) for path in origins.value
 assert not any(".lerobot_ref" in path or Path(path).resolve().is_relative_to(checkout) for path in sys.path)
 assert not any("__editable__" in repr(finder) for finder in sys.meta_path)
 expected_runtime = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
-package = Path(lerobot_preflight.__file__).resolve().parent
+package = Path(lerobot_flinch.__file__).resolve().parent
 actual_runtime = {path.relative_to(package).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
                   for path in package.rglob("*.py") if path.is_file()}
 assert expected_runtime and "__init__.py" in expected_runtime, "Artifact contains no Python runtime package"
@@ -47,7 +47,7 @@ print(json.dumps({"prefix": sys.prefix, "python": sys.version, "origins": origin
                   "runtime_module_count": len(actual_runtime), "runtime_module_hashes": actual_runtime,
                   "installed_runtime_matches_input_artifact": True,
                   "versions": {name: metadata.version(name) for name in
-                    ("lerobot-preflight", "lerobot", "torch", "numpy", "huggingface-hub", "safetensors")}}, indent=2))
+                    ("lerobot-flinch", "lerobot", "torch", "numpy", "huggingface-hub", "safetensors")}}, indent=2))
 """
 
 
@@ -140,7 +140,7 @@ save_file(values, state_file)
 (candidate / "config.json").write_text(json.dumps({**policy, "n_action_steps": 100}), encoding="utf-8")
 np.savez(root / "invalid_shape.npz", **{"observation.state": np.zeros((1, 1), dtype=np.float32)})
 (root / "native_ground_truth.json").write_text(json.dumps(observed, indent=2), encoding="utf-8")
-assert not any(name == "lerobot_preflight" or name.startswith("lerobot_preflight.") for name in __import__("sys").modules)
+assert not any(name == "lerobot_flinch" or name.startswith("lerobot_flinch.") for name in __import__("sys").modules)
 print(json.dumps(observed, indent=2))
 """
 
@@ -165,7 +165,7 @@ def _runtime_hashes(artifact: Path) -> dict[str, str]:
         with zipfile.ZipFile(artifact) as archive:
             for member in archive.infolist():
                 parts = PurePosixPath(member.filename).parts
-                if len(parts) >= 2 and parts[0] == "lerobot_preflight" and member.filename.endswith(".py"):
+                if len(parts) >= 2 and parts[0] == "lerobot_flinch" and member.filename.endswith(".py"):
                     add(parts[1:], archive.read(member))
     else:
         with tarfile.open(artifact) as archive:
@@ -174,7 +174,7 @@ def _runtime_hashes(artifact: Path) -> dict[str, str]:
                 if (
                     member.isfile()
                     and len(parts) >= 4
-                    and parts[1:3] == ("src", "lerobot_preflight")
+                    and parts[1:3] == ("src", "lerobot_flinch")
                     and member.name.endswith(".py")
                 ):
                     stream = archive.extractfile(member)
@@ -183,7 +183,7 @@ def _runtime_hashes(artifact: Path) -> dict[str, str]:
                     with stream:
                         add(parts[3:], stream.read())
     if "__init__.py" not in hashes:
-        raise ValueError("Release artifact contains no lerobot_preflight Python package")
+        raise ValueError("Release artifact contains no lerobot_flinch Python package")
     return hashes
 
 
@@ -251,7 +251,7 @@ def main(argv: list[str] | None = None) -> int:
     environment_dir = work / "installed environment"
     scripts = environment_dir / ("Scripts" if os.name == "nt" else "bin")
     python = scripts / ("python.exe" if os.name == "nt" else "python")
-    console = scripts / ("lerobot-preflight.exe" if os.name == "nt" else "lerobot-preflight")
+    console = scripts / ("flinch.exe" if os.name == "nt" else "flinch")
 
     def save() -> None:
         summary["passed"] = (
@@ -326,8 +326,8 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         wheels, sdists = (
-            sorted(dist.glob("lerobot_preflight-*.whl")),
-            sorted(dist.glob("lerobot_preflight-*.tar.gz")),
+            sorted(dist.glob("lerobot_flinch-*.whl")),
+            sorted(dist.glob("lerobot_flinch-*.tar.gz")),
         )
         if len(wheels) != 1 or len(sdists) != 1:
             raise ValueError("dist directory must contain exactly one wheel and one sdist")

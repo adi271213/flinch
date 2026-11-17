@@ -9,10 +9,10 @@ from pathlib import Path
 
 import pytest
 
-from lerobot_preflight.models import DiagnosticStatus
-from lerobot_preflight.preflight import run_preflight
-from lerobot_preflight.privilege_delta import run_privilege_delta
-from lerobot_preflight.trace import run_offline_trace
+from lerobot_flinch.models import DiagnosticStatus
+from lerobot_flinch.preflight import run_preflight
+from lerobot_flinch.privilege_delta import run_privilege_delta
+from lerobot_flinch.trace import run_offline_trace
 from tests.fixtures.make_bug_fixtures import make_bug_fixtures
 
 

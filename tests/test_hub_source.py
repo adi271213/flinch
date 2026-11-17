@@ -9,11 +9,11 @@ from typing import Any
 
 import pytest
 
-import lerobot_preflight.hub_scanner as hub_scanner
-from lerobot_preflight import cli, hub_source
-from lerobot_preflight.cli import main
-from lerobot_preflight.hub_source import HubReference, HubSourceError, parse_hub_reference
-from lerobot_preflight.models import PreflightReport
+import lerobot_flinch.hub_scanner as hub_scanner
+from lerobot_flinch import cli, hub_source
+from lerobot_flinch.cli import main
+from lerobot_flinch.hub_source import HubReference, HubSourceError, parse_hub_reference
+from lerobot_flinch.models import PreflightReport
 from tests.fixtures.make_bug_fixtures import make_bug_fixtures
 from tests.test_hub_scanner import _FakeHubApi, _mock_hub_downloads, _repo_files
 
@@ -115,7 +115,7 @@ def test_hub_revision_is_forwarded_and_baseline_accepts_hub_reference(
     revisions = {repo_id: kwargs.get("revision") for repo_id, kwargs in api.model_info_calls}
     assert revisions == {"owner/bug_5289_pathological_gain": "v1.0", "owner/clean_act_modern": None}
     output = capsys.readouterr().out
-    assert f"lerobot-preflight: hf://owner/bug_5289_pathological_gain@{SHA}" in output
+    assert f"flinch: hf://owner/bug_5289_pathological_gain@{SHA}" in output
     assert "baseline snapshot hf://owner/clean_act_modern" in output
 
 

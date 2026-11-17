@@ -94,7 +94,7 @@ def resolve_checkpoint(value: str | Path, *, api: Any | None = None) -> Iterator
     failure = f"Could not fetch the processor artifacts of {reference.display()}"
     with ExitStack() as stack:
         try:
-            temporary = stack.enter_context(tempfile.TemporaryDirectory(prefix="lerobot-preflight-hub-"))
+            temporary = stack.enter_context(tempfile.TemporaryDirectory(prefix="flinch-hub-"))
             manifest = download_lightweight_snapshot(
                 reference.repo_id, Path(temporary) / "snapshot", api=api, revision=reference.revision
             )

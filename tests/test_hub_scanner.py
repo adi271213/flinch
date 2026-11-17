@@ -12,15 +12,15 @@ import pytest
 import torch
 from safetensors.torch import save_file
 
-import lerobot_preflight.hub_scanner as hub_scanner
-from lerobot_preflight.hub_scanner import (
+import lerobot_flinch.hub_scanner as hub_scanner
+from lerobot_flinch.hub_scanner import (
     download_lightweight_snapshot,
     fetch_safetensors_header,
     parse_safetensors_header,
     scan_hub,
     write_hub_reports,
 )
-from lerobot_preflight.preflight import run_preflight
+from lerobot_flinch.preflight import run_preflight
 from tests.fixtures.make_bug_fixtures import make_bug_fixtures
 
 
@@ -1380,7 +1380,7 @@ def test_portable_cached_report_preserves_pins_coverage_and_can_rescan(
     source = project / ".hub_audit_snapshots" / "org-lowstd"
     source.parent.mkdir(parents=True)
     shutil.copytree(checkpoints["bug_5289_pathological_gain"], source)
-    monkeypatch.setattr(hub_scanner, "__file__", str(project / "src/lerobot_preflight/hub_scanner.py"))
+    monkeypatch.setattr(hub_scanner, "__file__", str(project / "src/lerobot_flinch/hub_scanner.py"))
     manifest = {
         "repo_id": "org/lowstd",
         "revision": "e" * 40,
@@ -1529,7 +1529,7 @@ def test_windows_external_snapshot_locator_is_relative_to_the_report_directory()
     ],
 )
 def test_portable_report_exports_windows_paths_without_machine_prefix(checkpoint, monkeypatch):
-    source = PureWindowsPath("C:/Work Tree/preflight/src/lerobot_preflight/hub_scanner.py")
+    source = PureWindowsPath("C:/Work Tree/preflight/src/lerobot_flinch/hub_scanner.py")
     monkeypatch.setattr(hub_scanner, "Path", lambda _: SimpleNamespace(resolve=lambda: source))
     original = {
         "repos": [{"repo_id": "org/lowstd", "revision": "a" * 40, "checkpoint_dir": checkpoint}],

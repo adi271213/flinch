@@ -2,7 +2,7 @@
 
 ## Scope and trust boundary
 
-`lerobot-preflight` inspects checkpoint artifacts and executes inspected native data processors on CPU. It does not run a neural policy, simulator, or motor controller. A passing report is not a hardware-safety certification or a guarantee about a checkpoint's neural weights.
+Flinch inspects checkpoint artifacts and executes inspected native data processors on CPU. It does not run a neural policy, simulator, or motor controller. A passing report is not a hardware-safety certification or a guarantee about a checkpoint's neural weights.
 
 Native processor construction is limited to inspected classes. Numeric VLA tracing does not construct the language tokenizer. NPZ samples are loaded with pickle disabled, and tensor buffers use safetensors. Missing support remains explicit `UNKNOWN` coverage.
 
@@ -14,7 +14,7 @@ Reports may contain tensor slices, dataset names, checkpoint paths, and caller-s
 
 ## Reporting a vulnerability
 
-Use [GitHub private vulnerability reporting](https://github.com/adi271213/lerobot-preflight/security/advisories/new) if the repository offers it. If that channel is unavailable, open an issue requesting a private contact channel without exploit details or sensitive artifacts. Private reporting availability is controlled by the repository owner; it has not been verified as enabled.
+Use [GitHub private vulnerability reporting](https://github.com/adi271213/flinch/security/advisories/new) if the repository offers it. If that channel is unavailable, open an issue requesting a private contact channel without exploit details or sensitive artifacts. Private reporting availability is controlled by the repository owner; it has not been verified as enabled.
 
 Include the package and LeRobot versions, platform, affected check or exporter, and a minimal synthetic reproduction when possible. Do not post tokens, private model data, or personal paths in a public issue. No response-time or security-support SLA is currently offered for this prerelease.
 

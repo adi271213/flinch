@@ -161,7 +161,7 @@ def _range_read(url: str, start: int, size: int, opener: Callable[..., Any]) -> 
         headers={
             "Range": f"bytes={start}-{start + size - 1}",
             "Accept-Encoding": "identity",
-            "User-Agent": "lerobot-preflight/metadata-scanner",
+            "User-Agent": "lerobot-flinch/metadata-scanner",
         },
     )
     with opener(request, timeout=20) as response:
@@ -270,14 +270,14 @@ def _strict_tensor_range_read(
     end = start + size - 1
     parsed = urlsplit(url)
     query = dict(parse_qsl(parsed.query))
-    query.update({"download": "true", "lerobot_preflight_range": f"{start}-{end}"})
+    query.update({"download": "true", "lerobot_flinch_range": f"{start}-{end}"})
     ranged_url = urlunsplit((parsed.scheme, parsed.netloc, parsed.path, urlencode(query), parsed.fragment))
     request = Request(
         ranged_url,
         headers={
             "Range": f"bytes={start}-{end}",
             "Accept-Encoding": "identity",
-            "User-Agent": "lerobot-preflight/normalization-range-scanner",
+            "User-Agent": "lerobot-flinch/normalization-range-scanner",
         },
     )
     with opener(request, timeout=20) as response:
@@ -1982,8 +1982,9 @@ def _validate_report_destination(path: Path) -> None:
             else:
                 recognized = previous.startswith(
                     (
+                        "# flinch: numerical processor and chronology audit\n\nGenerated: ",
+                        # Titles from earlier releases: recognized only so older reports can be replaced.
                         "# lerobot-preflight: numerical processor and chronology audit\n\nGenerated: ",
-                        # Pre-rename report title: recognized only so older reports can be replaced.
                         "# lerobot-doctor: numerical processor and chronology audit\n\nGenerated: ",
                         "# LeRobot Hub checkpoint audit\n\nGenerated: ",
                     )
@@ -2054,7 +2055,7 @@ def write_hub_reports(
     )
     pinned = sum(bool(repo.get("revision")) for repo in report["repos"])
     lines = [
-        "# lerobot-preflight: numerical processor and chronology audit",
+        "# flinch: numerical processor and chronology audit",
         "",
         f"Generated: {report['generated_at_utc']}",
         "",
@@ -2426,7 +2427,7 @@ def write_hub_reports(
         "",
         "## Scope",
         "",
-        "Local CLI: `lerobot-preflight --policy ./ckpt --report ./preflight-report.json`. Add `--sample ./obs.npz` for an offline numeric trace or `--baseline ./prod` for a processor comparison.",
+        "Local CLI: `flinch --policy ./ckpt --report ./flinch-report.json`. Add `--sample ./obs.npz` for an offline numeric trace or `--baseline ./prod` for a processor comparison.",
         "This is artifact screening plus native synthetic normalization-boundary and temporal-anchor probes. No policy inference, simulator rollout, or motor command runs.",
         "Neural model weights are never downloaded as full files, including models below 5 MiB. Safetensors models use bounded header reads. Selected scalar/vector legacy state and action normalization values are fetched through exact HTTP 206 byte ranges; no other tensor payloads are requested.",
         "When legacy epsilon or execution dtype is undeclared, numeric screening uses the inspected native migration defaults (epsilon 1e-8); FP16 findings are conditional risks, not proof of the legacy runtime dtype or an observed execution failure.",

@@ -8,8 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from lerobot_preflight.models import DiagnosticStatus
-from lerobot_preflight.temporal import run_temporal_audit
+from lerobot_flinch.models import DiagnosticStatus
+from lerobot_flinch.temporal import run_temporal_audit
 from tests.fixtures.make_bug_fixtures import make_bug_fixtures
 
 

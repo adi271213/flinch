@@ -20,9 +20,9 @@ from lerobot.processor import (
 )
 from safetensors.torch import load_file, save_file
 
-from lerobot_preflight.cli import main, run_checks
-from lerobot_preflight.models import DiagnosticStatus, PreflightReport
-from lerobot_preflight.privilege_delta import run_privilege_delta
+from lerobot_flinch.cli import main, run_checks
+from lerobot_flinch.models import DiagnosticStatus, PreflightReport
+from lerobot_flinch.privilege_delta import run_privilege_delta
 from tests.fixtures.make_bug_fixtures import make_bug_fixtures
 
 
@@ -371,7 +371,7 @@ def test_run_checks_aggregates_static_trace_temporal_and_baseline_checks(
 def test_runner_records_unexpected_stage_error_and_continues_to_temporal(
     checkpoints: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import lerobot_preflight.cli as cli_module
+    import lerobot_flinch.cli as cli_module
 
     checkpoint = checkpoints["clean_act_modern"]
 
@@ -1255,7 +1255,7 @@ def test_round3_fp16_intermediate_overflow_is_not_hidden_by_finite_composed_acti
     assert stage1.dtype is torch.float16
     assert torch.isinf(stage1).all()
     # Both unnormalizers have a finite, near-identity ideal composed map.
-    from lerobot_preflight.privilege_delta import _action_affine, _policy, _static_pair
+    from lerobot_flinch.privilege_delta import _action_affine, _policy, _static_pair
 
     composed = _action_affine(_static_pair(candidate, _policy(candidate))[1])
     assert torch.isfinite(composed["slope"]).all() and torch.isfinite(composed["origin"]).all()
@@ -1683,7 +1683,7 @@ def _round4_visual_checkpoint(checkpoint, mode, *, changed=False, scalar=False, 
     ],
 )
 def test_round4_d_visual_stat_drift_is_compared_without_full_image_probes(tmp_path, monkeypatch, mode):
-    import lerobot_preflight.preflight as preflight
+    import lerobot_flinch.preflight as preflight
 
     baseline = _round4_visual_checkpoint(tmp_path / "baseline", mode, large=True)
     candidate = _round4_visual_checkpoint(tmp_path / "candidate", mode, changed=True, large=True)

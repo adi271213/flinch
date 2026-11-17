@@ -16,7 +16,7 @@ from lerobot.processor import (
 )
 from safetensors.torch import load_file, save_file
 
-from lerobot_preflight.graph import build_processor_graph, processor_graph_to_mermaid, write_processor_graph
+from lerobot_flinch.graph import build_processor_graph, processor_graph_to_mermaid, write_processor_graph
 from tests.fixtures.make_bug_fixtures import make_bug_fixtures
 
 
@@ -451,7 +451,7 @@ def test_noncanonical_action_feature_has_no_phantom_normalization(checkpoints):
 
 
 def test_unreferenced_neural_weight_shards_are_never_read(checkpoints, monkeypatch):
-    from lerobot_preflight import graph as module
+    from lerobot_flinch import graph as module
 
     checkpoint = checkpoints["clean_act_modern"]
     shard = checkpoint / "model-00001-of-00002.safetensors"
@@ -510,7 +510,7 @@ def test_temporal_anchor_edge_uses_entering_state_and_no_false_output_cycle(chec
 
 
 def test_legacy_visual_paths_remain_unknown_and_header_digest_scope_is_visible(tmp_path, monkeypatch):
-    from lerobot_preflight import graph as module
+    from lerobot_flinch import graph as module
 
     checkpoint = tmp_path / "legacy"
     checkpoint.mkdir()

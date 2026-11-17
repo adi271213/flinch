@@ -20,14 +20,14 @@ from lerobot.processor import (
 )
 from safetensors.torch import load_file, save_file
 
-from lerobot_preflight.models import (
+from lerobot_flinch.models import (
     DiagnosticFinding,
     DiagnosticStatus,
     PreflightReport,
     Provenance,
     Severity,
 )
-from lerobot_preflight.preflight import run_preflight
+from lerobot_flinch.preflight import run_preflight
 from tests.fixtures.make_bug_fixtures import make_bug_fixtures
 
 
@@ -1643,7 +1643,7 @@ def test_all_inline_active_normalizers_can_establish_complete_numeric_coverage(
 
 
 def test_contained_artifact_directory_is_allowed_but_state_stays_file_only(tmp_path: Path) -> None:
-    from lerobot_preflight.preflight import _local_file
+    from lerobot_flinch.preflight import _local_file
 
     root = tmp_path / "checkpoint"
     artifact = root / "tokenizer"
@@ -2429,7 +2429,7 @@ def test_observation_rename_does_not_require_observations_for_action_subpath_pro
 
 
 def test_explicit_bfloat16_70000_mean_does_not_fail_strict_as_hypothetical_half(checkpoints):
-    from lerobot_preflight.cli import main
+    from lerobot_flinch.cli import main
 
     checkpoint = checkpoints["clean_act_modern"]
     old_config = json.loads((checkpoint / "preprocessor_config.json").read_text())
@@ -2463,7 +2463,7 @@ def test_explicit_bfloat16_70000_mean_does_not_fail_strict_as_hypothetical_half(
 
 
 def test_action_mode_without_feature_or_stats_has_unknown_numeric_coverage(checkpoints):
-    from lerobot_preflight.cli import main
+    from lerobot_flinch.cli import main
 
     checkpoint = checkpoints["clean_act_modern"]
     old_config = json.loads((checkpoint / "preprocessor_config.json").read_text())

@@ -1,1 +1,1 @@
-"""Tests for the lerobot-preflight package."""
+"""Tests for Flinch."""

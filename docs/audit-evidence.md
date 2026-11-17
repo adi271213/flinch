@@ -113,7 +113,7 @@ physical robot deployments.
 | --- | --- |
 | [robotruth 0.1.6](https://github.com/mulkakhileshmj/robotruth/tree/8eb1704cf446239e3f03687c2ebd707cbab68e98) | Public contract comparison APIs and eight unmodified CLI smoke runs. Explicit synthetic benchmark declarations avoided uniform missing-hardware-metadata blocks. Changed-stat and horizon baseline gates received credit. A changed scalar weight-file control was rejected by its identity hash; our processor gate allowed it. Its runtime monitors were not benchmarked. |
 | [Tether 0.12.0](https://pypi.org/project/fastcrest-tether/0.12.0/) | Four released Doctor components and its separate embodiment schema, through disclosed adapters from LeRobot stats/shapes. No full Tether CLI, ONNX policy export or deployment was tested. Zero/NaN/wrong-length action std coverage overlaps. Relative anchoring and native epsilon arithmetic were not representable by the adapter. |
-| lerobot-preflight | Standalone native numerical diagnosis and chronology checking, plus baseline comparisons. `std[9]=1.48e-6` with a `+0.20` sample produced `134,228.1875`; the native trace pinpointed coordinate `9`. Namespace bypass and actual FP16 NaN were localized. The custom oldest-first anchor failed despite a passing native round-trip; the current-first control passed. |
+| Flinch (then lerobot-preflight) | Standalone native numerical diagnosis and chronology checking, plus baseline comparisons. `std[9]=1.48e-6` with a `+0.20` sample produced `134,228.1875`; the native trace pinpointed coordinate `9`. Namespace bypass and actual FP16 NaN were localized. The custom oldest-first anchor failed despite a passing native round-trip; the current-first control passed. |
 
 robotruth's baseline blocked the tiny-spread statistics change; its self-check
 passed. Tether's tested components and schema passed those tiny-spread values.
@@ -124,7 +124,7 @@ No neural weight-identity gate is implemented here.
 
 ## Historical clean-install CI
 
-On **2026-11-17**, [GitHub Actions run 44108621945](https://github.com/adi271213/lerobot-preflight/actions/runs/44108621945)
+On **2026-11-17**, [GitHub Actions run 44108621945](https://github.com/adi271213/flinch/actions/runs/44108621945)
 passed at commit `aef9f1aac28569c6185b0d5a37156c9c7a0d1170`. The repository/run is
 private and requires access. These results apply to that prior revision, not
 automatically to subsequent changes.

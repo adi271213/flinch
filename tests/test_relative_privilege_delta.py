@@ -18,10 +18,10 @@ from lerobot.processor import (
 )
 from safetensors.torch import load_file, save_file
 
-from lerobot_preflight.cli import main
-from lerobot_preflight.models import DiagnosticStatus
-from lerobot_preflight.preflight import run_preflight
-from lerobot_preflight.privilege_delta import run_privilege_delta
+from lerobot_flinch.cli import main
+from lerobot_flinch.models import DiagnosticStatus
+from lerobot_flinch.preflight import run_preflight
+from lerobot_flinch.privilege_delta import run_privilege_delta
 
 
 def _checkpoint(path, *, normalization=False, enabled=True, mask=None):

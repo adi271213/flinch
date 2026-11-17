@@ -26,4 +26,4 @@ Thumbs.db
 tests/fixtures/generated/
 
 # Local demo checkpoints.
-.preflight-demo/
+.flinch-demo/

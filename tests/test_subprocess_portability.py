@@ -34,7 +34,7 @@ def test_cli_source_subprocess_detects_bypass_without_editable_install(tmp_path)
     source = Path(__file__).resolve().parents[1] / "src"
     expected_lerobot = Path(lerobot.__file__).resolve()
     env = source_subprocess_env()
-    env["PREFLIGHT_TEST_DEPENDENCY_PATHS"] = json.dumps(
+    env["FLINCH_TEST_DEPENDENCY_PATHS"] = json.dumps(
         list(
             dict.fromkeys(
                 [
@@ -52,7 +52,7 @@ import json, os, sys
 from pathlib import Path
 # -S disables site initialization and every .pth editable-install hook. Add only
 # dependency directories, as plain paths, without processing their .pth files.
-sys.path.extend(json.loads(os.environ["PREFLIGHT_TEST_DEPENDENCY_PATHS"]))
+sys.path.extend(json.loads(os.environ["FLINCH_TEST_DEPENDENCY_PATHS"]))
 assert not any(type(finder).__module__.startswith("__editable") or
                getattr(finder, "__module__", "").startswith("__editable")
                for finder in sys.meta_path)
@@ -63,9 +63,9 @@ import socket
 def no_network(*args, **kwargs):
     raise AssertionError("offline CLI opened a network socket")
 socket.socket = socket.create_connection = no_network
-import lerobot_preflight
-from lerobot_preflight.cli import main
-assert Path(lerobot_preflight.__file__).resolve().is_relative_to(Path(sys.argv[1]))
+import lerobot_flinch
+from lerobot_flinch.cli import main
+assert Path(lerobot_flinch.__file__).resolve().is_relative_to(Path(sys.argv[1]))
 checkpoint = Path(sys.argv[3])
 result = main(["--policy", str(checkpoint), "--sample", str(checkpoint / "sample_observation.npz")])
 assert result == 1

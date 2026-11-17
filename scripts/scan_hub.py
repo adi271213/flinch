@@ -13,7 +13,7 @@ SOURCE_ROOT = Path(__file__).resolve().parents[1] / "src"
 if str(SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(SOURCE_ROOT))
 
-from lerobot_preflight.hub_scanner import scan_hub, write_hub_reports  # noqa: E402
+from lerobot_flinch.hub_scanner import scan_hub, write_hub_reports  # noqa: E402
 
 
 def _print_progress(*parts: Any) -> None:

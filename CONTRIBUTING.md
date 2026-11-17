@@ -67,7 +67,7 @@ The six-job GitHub Actions matrix checks both artifacts on Linux, macOS and Wind
 
 ## Repository hygiene
 
-Keep source under `src/lerobot_preflight`, regression tests under `tests`, source tools under `scripts`, and maintained prose under `docs`. Do not commit virtualenvs, cached checkpoints, model weights, bytecode, build products, tokens, or raw private diagnostic evidence. Keep editor-local exclusions in `.git/info/exclude`. Historical local research archives are not required to install or test the package.
+Keep source under `src/lerobot_flinch`, regression tests under `tests`, source tools under `scripts`, and maintained prose under `docs`. Do not commit virtualenvs, cached checkpoints, model weights, bytecode, build products, tokens, or raw private diagnostic evidence. Keep editor-local exclusions in `.git/info/exclude`. Historical local research archives are not required to install or test the package.
 
 Use your legitimate Git identity and preserve authentic third-party attribution. Do not rewrite published history as part of cleanup. Keep changes focused and explain the verified problem, resulting behavior, and actual validation in the pull request.
 

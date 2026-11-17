@@ -13,4 +13,4 @@ List the commands you actually ran and their outcomes. For diagnostic changes, n
 - [ ] Diagnostics remain read-only and retain `UNKNOWN` for unsupported evidence or undeclared physical semantics.
 - [ ] Documentation reflects the change; no credentials, cached checkpoints, model weights, or generated artifacts are included.
 
-See the [contribution guide](https://github.com/adi271213/lerobot-preflight/blob/main/CONTRIBUTING.md) for local checks and release validation.
+See the [contribution guide](https://github.com/adi271213/flinch/blob/main/CONTRIBUTING.md) for local checks and release validation.

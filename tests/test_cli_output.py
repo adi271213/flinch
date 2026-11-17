@@ -12,12 +12,12 @@ from lerobot.configs import FeatureType, NormalizationMode, PolicyFeature
 from lerobot.processor import NormalizerProcessorStep, PolicyProcessorPipeline
 from safetensors.torch import load_file
 
-import lerobot_preflight.hub_scanner as hub_scanner
-from lerobot_preflight.cli import main, run_checks
-from lerobot_preflight.hub_source import _first_line
-from lerobot_preflight.models import DiagnosticStatus
-from lerobot_preflight.preflight import run_preflight
-from lerobot_preflight.privilege_delta import run_privilege_delta
+import lerobot_flinch.hub_scanner as hub_scanner
+from lerobot_flinch.cli import main, run_checks
+from lerobot_flinch.hub_source import _first_line
+from lerobot_flinch.models import DiagnosticStatus
+from lerobot_flinch.preflight import run_preflight
+from lerobot_flinch.privilege_delta import run_privilege_delta
 from tests.fixtures.make_bug_fixtures import make_bug_fixtures
 from tests.test_preflight import _write_multi_dataset_buffers
 
