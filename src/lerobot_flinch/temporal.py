@@ -23,8 +23,9 @@ from lerobot.processor import (
 )
 from lerobot.utils.constants import ACTION, OBS_STATE
 
+from .guard import MODE_STATS as _MODE_STATS
 from .models import DiagnosticFinding, DiagnosticStatus, Provenance, Severity
-from .preflight import _MODE_STATS, _provenance
+from .preflight import _provenance
 
 _CHECK_ID = "TEMPORAL_ANCHOR_MISMATCH"
 _ROUNDTRIP_ATOL = 1e-5

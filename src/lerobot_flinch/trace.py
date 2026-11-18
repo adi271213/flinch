@@ -47,8 +47,8 @@ from lerobot.utils.constants import (
     OBS_LANGUAGE_TOKENS,
 )
 
-from .guard import InputEnvelopeError, InputEnvelopeGuardStep
-from .models import DiagnosticFinding, DiagnosticStatus, Provenance, Severity
+from .guard import MODE_STATS, InputEnvelopeError, InputEnvelopeGuardStep
+from .models import DiagnosticFinding, DiagnosticStatus, Provenance, Severity, index_list_text
 from .preflight import (
     _CONFIG_NAMES,
     _local_file,
@@ -585,11 +585,7 @@ def _nonidentity(state: dict[str, torch.Tensor], key: str, mode: NormalizationMo
             tensor is not None and bool(torch.any(tensor != identity))
             for tensor, identity in ((stats["mean"], 0), (stats["std"], 1))
         )
-    bounds = {
-        NormalizationMode.MIN_MAX: ("min", "max"),
-        NormalizationMode.QUANTILES: ("q01", "q99"),
-        NormalizationMode.QUANTILE10: ("q10", "q90"),
-    }.get(mode)
+    bounds = MODE_STATS.get(mode)
     return bool(bounds) and any(
         stats[name] is not None and bool(torch.any(stats[name] != identity))
         for name, identity in zip(bounds or (), (-1, 1))
@@ -628,12 +624,7 @@ def _bypasses(
             else any(_nonidentity(state, actual, mode) for actual in actual_keys)
         )
         previous, current = before[key], after[key]
-        required = {
-            NormalizationMode.MEAN_STD: ("mean", "std"),
-            NormalizationMode.MIN_MAX: ("min", "max"),
-            NormalizationMode.QUANTILES: ("q01", "q99"),
-            NormalizationMode.QUANTILE10: ("q10", "q90"),
-        }.get(mode, ())
+        required = MODE_STATS.get(mode, ())
         details = {
             "expected_keys": [f"{key}.{stat}" for stat in required],
             "expected_feature_keys": sorted(expected),
@@ -733,12 +724,7 @@ def _gain_mask(
                 return torch.zeros_like(large)
             feature_type = feature.type
         mode = step.norm_map.get(feature_type, NormalizationMode.IDENTITY)
-        required = {
-            NormalizationMode.MEAN_STD: ("mean", "std"),
-            NormalizationMode.MIN_MAX: ("min", "max"),
-            NormalizationMode.QUANTILES: ("q01", "q99"),
-            NormalizationMode.QUANTILE10: ("q10", "q90"),
-        }.get(mode)
+        required = MODE_STATS.get(mode)
         if not required or any(f"{key}.{stat}" not in state for stat in required):
             return torch.zeros_like(large)
     if previous is None or previous.numel() != current.numel():
@@ -781,9 +767,9 @@ def _trace_pipeline(
         shape = details.get("tensor_shape") or []
         frames = shape[0] if len(shape) >= 2 else 1
         width = max(1, math.prod(shape[1:])) if len(shape) >= 2 else max(1, math.prod(shape))
-        coordinates = sorted({flat % width for flat in indices})
         where = ""
         if frames > 1 and indices:
+            coordinates = sorted({flat % width for flat in indices})
             details = {
                 **details,
                 "flattened_indices": indices,
@@ -792,7 +778,7 @@ def _trace_pipeline(
                 "frames_total": frames,
             }
             where = (
-                f", coordinate(s) {coordinates[:8]}{' ...' if len(coordinates) > 8 else ''} "
+                f", coordinate(s) {index_list_text(coordinates, limit=8)} "
                 f"in {details['frames_affected']} of {frames} frames"
             )
             indices = coordinates
@@ -839,9 +825,7 @@ def _trace_pipeline(
             checked_keys = sorted(
                 key
                 for key, value in before.items()
-                if key in observation_tensor_keys
-                and value.is_floating_point()
-                and (step.keys is None or key in step.keys)
+                if key in observation_tensor_keys and value.is_floating_point() and step.selects(key)
             )
             clamped_keys = [key for key in checked_keys if not torch.equal(before[key], after[key])]
             findings.append(
@@ -944,7 +928,6 @@ def _trace_pipeline(
                 "on_violation": step.on_violation,
                 "keys": step.keys,
                 "input_values": exc.values,
-                "guard_input_values": exc.values,
                 "tensor_slice": exc.values,
                 "violating_index_count": exc.total_count,
                 "tensor_shape": list(tensor.shape) if tensor is not None else None,

@@ -29,7 +29,8 @@ from lerobot.processor import (
 )
 
 _ERROR_SAMPLE_SIZE = 8
-_MODE_STATS = {
+# The statistics each normalization mode needs. The one shared definition in Flinch.
+MODE_STATS = {
     NormalizationMode.MEAN_STD: ("mean", "std"),
     NormalizationMode.MIN_MAX: ("min", "max"),
     NormalizationMode.QUANTILES: ("q01", "q99"),
@@ -70,6 +71,9 @@ class InputEnvelopeGuardStep(ObservationProcessorStep):  # type: ignore[misc]  #
     managed_by_helper: bool = False
     # How many values clamp mode has rewritten since this step was created; not saved.
     clamp_count: int = field(default=0, init=False, repr=False, compare=False)
+    _limits: dict[tuple[Any, ...], tuple[torch.Tensor, bool]] = field(
+        default_factory=dict, init=False, repr=False, compare=False
+    )
 
     def __post_init__(self) -> None:
         if isinstance(self.max_abs, bool) or not isinstance(self.max_abs, Real):
@@ -107,18 +111,19 @@ class InputEnvelopeGuardStep(ObservationProcessorStep):  # type: ignore[misc]  #
         for key, value in observation.items():
             if not isinstance(value, torch.Tensor) or not value.is_floating_point():
                 continue
-            if self.keys is not None and key not in self.keys:
+            if not self.selects(key):
+                continue
+            limit, limit_is_finite = self._limit(value)
+            magnitude = value.abs()
+            # One pass for the common case: NaN compares False, so it falls through too.
+            if limit_is_finite and bool((magnitude <= limit).all()):
                 continue
             finite = torch.isfinite(value)
-            limit = torch.tensor(self.max_abs, device=value.device, dtype=value.dtype)
-            if bool(torch.isfinite(limit)) and float(limit) > self.max_abs:
-                # A rounded-up half/bfloat limit would admit values above the
-                # configured real envelope. Use the adjacent inward value.
-                limit = torch.nextafter(limit, torch.zeros_like(limit))
-            outside = finite & (value.abs() > limit)
-            if bool(finite.all()) and not bool(outside.any()):
+            all_finite = bool(finite.all())
+            outside = finite & (magnitude > limit)
+            if all_finite and not bool(outside.any()):
                 continue
-            if self.on_violation == "clamp" and bool(finite.all()):
+            if self.on_violation == "clamp" and all_finite:
                 result[key] = value.clamp(-limit, limit)
                 if self.clamp_count == 0:
                     logging.getLogger(__name__).warning(
@@ -130,10 +135,28 @@ class InputEnvelopeGuardStep(ObservationProcessorStep):  # type: ignore[misc]  #
                 continue
             rejected = (~finite | outside).reshape(-1)
             total_count = int(rejected.sum())
-            indices = rejected.nonzero().flatten()[:_ERROR_SAMPLE_SIZE]
+            indices = rejected.nonzero().flatten()[:_ERROR_SAMPLE_SIZE]  # capped before .tolist()
             values = value.reshape(-1)[indices].tolist()
             raise InputEnvelopeError(key, indices.tolist(), values, total_count, self.max_abs)
         return result
+
+    def _limit(self, value: torch.Tensor) -> tuple[torch.Tensor, bool]:
+        """``max_abs`` in the tensor's dtype and device, built once per (dtype, device, max_abs)."""
+        cache_key = (value.dtype, value.device, self.max_abs)
+        if cache_key not in self._limits:
+            if len(self._limits) >= 8:  # A few dtype/device pairs in practice; never grow without bound.
+                self._limits.clear()
+            limit = torch.tensor(self.max_abs, device=value.device, dtype=value.dtype)
+            if bool(torch.isfinite(limit)) and float(limit) > self.max_abs:
+                # A rounded-up half/bfloat limit would admit values above the
+                # configured real envelope. Use the adjacent inward value.
+                limit = torch.nextafter(limit, torch.zeros_like(limit))
+            self._limits[cache_key] = (limit, bool(torch.isfinite(limit)))
+        return self._limits[cache_key]
+
+    def selects(self, key: str) -> bool:
+        """Whether this guard checks ``key`` (every key when ``keys`` is None)."""
+        return self.keys is None or key in self.keys
 
     def get_config(self) -> dict[str, Any]:
         return {
@@ -181,7 +204,7 @@ def _normalized_observation_keys(steps: list[Any], stop: int) -> list[str]:
                 ):
                     continue
                 mode = step.norm_map.get(feature.type, NormalizationMode.IDENTITY)
-                required = _MODE_STATS.get(mode, ())
+                required = MODE_STATS.get(mode, ())
                 if not required or any(f"{key}.{name}" not in state for name in required):
                     continue
                 mask = state.get(f"{key}.mask") if masked else None

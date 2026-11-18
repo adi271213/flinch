@@ -35,6 +35,7 @@ from lerobot.processor import (
 )
 from safetensors import safe_open
 
+from .guard import MODE_STATS as _MODE_STATS
 from .guard import InputEnvelopeError, InputEnvelopeGuardStep
 from .models import (
     MAX_EVIDENCE_ITEMS,
@@ -43,6 +44,8 @@ from .models import (
     PreflightReport,
     Provenance,
     Severity,
+    index_list_text,
+    tool_error_finding,
 )
 
 _NORMALIZERS = (NormalizerProcessorStep, UnnormalizerProcessorStep)
@@ -70,12 +73,6 @@ _LEGACY_BUFFER_PREFIXES = (
 _MASKED_NORMALIZERS = {
     "molmoact2_masked_normalizer": NormalizerProcessorStep,
     "molmoact2_masked_unnormalizer": UnnormalizerProcessorStep,
-}
-_MODE_STATS = {
-    NormalizationMode.MEAN_STD: ("mean", "std"),
-    NormalizationMode.MIN_MAX: ("min", "max"),
-    NormalizationMode.QUANTILES: ("q01", "q99"),
-    NormalizationMode.QUANTILE10: ("q10", "q90"),
 }
 # On Python 3.12/Windows, st_ctime_ns is creation time, not content-change
 # time. Size/mtime/inode can all remain unchanged after an in-place rewrite.
@@ -168,7 +165,7 @@ def _native_normalization_probe(
             if feature_key == "action":
                 continue  # This observation-only guard cannot touch the ACTION transition.
             step = cls(**entry.get("config", {}))
-            if step.keys is not None and current_key not in step.keys:
+            if not step.selects(current_key):
                 continue
         elif index in normalizers:
             candidate = normalizers[index]
@@ -1249,12 +1246,6 @@ def _first(mask: torch.Tensor) -> torch.Tensor:
     return keep.reshape(mask.shape)
 
 
-def _index_text(indices: list[int], total: int) -> str:
-    if total <= 16:
-        return str(indices)
-    return "[" + ", ".join(map(str, indices[:8])) + f", ... ({total} in total)]"
-
-
 def _buffer_finding(
     report: PreflightReport,
     check: str,
@@ -1277,7 +1268,7 @@ def _buffer_finding(
         report,
         check,
         DiagnosticStatus.FAIL,
-        f"{key} has unsafe normalization buffer values at indices {_index_text(indices, total)}.",
+        f"{key} has unsafe normalization buffer values at indices {index_list_text(indices, total)}.",
         {
             "step_index": step_index,
             "feature_key": key.rsplit(".", 1)[0],
@@ -1633,7 +1624,7 @@ def _gain_finding(
     indices = finding.provenance.violating_indices or []
     finding.summary = (
         f"Forward {extra['normalization_mode']} normalization has gain up to {maximum_gain:.8g}x "
-        f"at indices {_index_text(indices, int(finding.details.get('violating_count', len(indices))))}."
+        f"at indices {index_list_text(indices, int(finding.details.get('violating_count', len(indices))))}."
     )
     if extra.get("probe_available"):
         maximum_output = extra.get("probe_output_max_abs")
@@ -2201,10 +2192,10 @@ def _screen_normalizer_state(
                         {
                             **extra,
                             "std_warn_threshold": threshold,
-                            "amplification_factors": (1 / saved[_first(small)]).tolist(),
+                            "amplification_factors": (1 / saved[(shown := _first(small))]).tolist(),
                             "gain_dtype": str(target_dtype).removeprefix("torch."),
                             "gain_formula": "1 / (std + eps)",
-                            "effective_gains_with_eps": effective_gain[_first(small)].tolist(),
+                            "effective_gains_with_eps": effective_gain[shown].tolist(),
                             "maximum_gain": float(effective_gain[small].max()) if bool(small.any()) else None,
                             **probe,
                         },
@@ -2279,14 +2270,14 @@ def _screen_normalizer_state(
                                 **extra,
                                 "std_warn_threshold": threshold,
                                 "upper_buffer_key": f"{feature}.{required[1]}",
-                                "upper_values": upper[_first(small)].tolist(),
-                                "saved_span_values": saved_span[_first(small)].tolist(),
-                                "amplification_factors": (2 / saved_span[_first(small)]).tolist(),
+                                "upper_values": upper[(shown := _first(small))].tolist(),
+                                "saved_span_values": saved_span[shown].tolist(),
+                                "amplification_factors": (2 / saved_span[shown]).tolist(),
                                 "gain_dtype": str(target_dtype).removeprefix("torch."),
                                 "gain_formula": f"2 / ({span_expression} + eps)"
                                 if legacy_additive_eps
                                 else f"2 / where({span_expression} == 0, eps, {span_expression})",
-                                "effective_gains_with_eps": gain[_first(small)].tolist(),
+                                "effective_gains_with_eps": gain[shown].tolist(),
                                 "maximum_gain": float(gain[small].max()) if bool(small.any()) else None,
                                 **probe,
                             },
@@ -3327,7 +3318,7 @@ def run_preflight(
     def isolated(
         stage: str,
         check: Callable[[], Any],
-        provenance: Provenance | None = None,
+        source: Path | None = None,
         *,
         numeric_coverage: bool = False,
     ) -> Any:
@@ -3337,14 +3328,10 @@ def run_preflight(
         except Exception as exc:
             if numeric_coverage:
                 coverage_gaps.append({"stage": stage, "reason": "check_did_not_finish"})
-            _add(
-                report,
-                "CHECK_INCOMPLETE",
-                DiagnosticStatus.UNKNOWN,
-                f"The {stage} check could not finish: {type(exc).__name__}: {exc}",
-                {"stage": stage, "exception_type": type(exc).__name__, "tool_error": True},
-                provenance,
-                severity=Severity.WARNING,
+            report.findings.append(
+                tool_error_finding(
+                    "CHECK_INCOMPLETE", stage, exc, Severity.WARNING, _provenance(source) if source else None
+                )
             )
             return None
 
@@ -3356,7 +3343,7 @@ def run_preflight(
             functools.partial(
                 _screen_native_normalization_chain, root, config_path, config, report, std_warn_threshold
             ),
-            _provenance(config_path),
+            config_path,
             numeric_coverage=True,
         )
     isolated(

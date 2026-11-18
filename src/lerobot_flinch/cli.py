@@ -27,6 +27,7 @@ from .models import (
     PreflightReport,
     Severity,
     bounded_text,
+    tool_error_finding,
 )
 from .preflight import _multi_dataset_action_prefixes, run_preflight
 from .temporal import run_temporal_audit
@@ -44,14 +45,7 @@ def _positive_finite(value: str) -> float:
 
 
 def _runner_error(stage: str, exc: Exception) -> DiagnosticFinding:
-    return DiagnosticFinding(
-        check_id="RUNNER_ERROR",
-        # A crash says nothing about the checkpoint, so it is not a FAIL; exit code 3 reports it.
-        status=DiagnosticStatus.UNKNOWN,
-        severity=Severity.CRITICAL,
-        summary=f"Flinch could not finish the {stage} check: {type(exc).__name__}: {exc}",
-        details={"stage": stage, "exception_type": type(exc).__name__, "tool_error": True},
-    )
+    return tool_error_finding("RUNNER_ERROR", stage, exc, Severity.CRITICAL)
 
 
 def _collect(
@@ -92,9 +86,16 @@ def _add_sample_evidence(report: PreflightReport, sample: Path) -> None:
     still one sensor glitch away from the full gain. This only tells the user how close
     their own data came.
     """
+    wanted = {
+        str(finding.details.get("feature_key"))
+        for finding in report.findings
+        if finding.check_id == "PATHOLOGICAL_STD_GAIN" and finding.status is DiagnosticStatus.FAIL
+    }
+    if not wanted:
+        return
     try:
-        with np.load(sample, allow_pickle=False) as archive:
-            data = {key: archive[key] for key in archive.files}
+        with np.load(sample, allow_pickle=False) as archive:  # Read only the arrays we need.
+            data = {key: archive[key] for key in archive.files if key in wanted}
     except (OSError, ValueError):
         return  # The trace already reports an unreadable sample.
     for finding in report.findings:
@@ -114,8 +115,8 @@ def _add_sample_evidence(report: PreflightReport, sample: Path) -> None:
         if not width or values.size % width:
             continue
         indices = provenance.violating_indices[: len(gains)]
-        frames = values.reshape(-1, width).astype(np.float64)
-        spread = np.ptp(frames[:, indices], axis=0)
+        frames = values.reshape(-1, width)
+        spread = np.ptp(frames[:, indices].astype(np.float64), axis=0)
         normalized = spread * np.asarray(gains[: len(indices)], dtype=np.float64)
         details["sample_frames"] = len(frames)
         details["sample_raw_spread"] = spread.tolist()

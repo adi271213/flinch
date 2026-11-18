@@ -28,11 +28,11 @@ from lerobot.processor import (
 )
 from safetensors import SafetensorError
 
+from .guard import MODE_STATS as _MODE_STATS
 from .guard import InputEnvelopeGuardStep
 from .models import _json_value
 from .preflight import (
     _MASKED_NORMALIZERS,
-    _MODE_STATS,
     _legacy_declared_features,
     _local_file,
     _normalization_base,
@@ -608,9 +608,7 @@ def build_processor_graph(checkpoint_dir: Path, metadata_path: Path | None = Non
                 if cls is InputEnvelopeGuardStep:
                     props.pop("normalization_mode")
                     declared_dtype = declaration.get("dtype")
-                    selected = (
-                        guard is not None and key != "action" and (guard.keys is None or key in guard.keys)
-                    )
+                    selected = guard is not None and key != "action" and guard.selects(key)
                     floating = declared_dtype is None or declared_dtype in DeviceProcessorStep.DTYPE_MAPPING
                     applies = selected and floating
                     guard_mode = guard.on_violation if guard is not None else None

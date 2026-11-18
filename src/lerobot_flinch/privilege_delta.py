@@ -26,6 +26,7 @@ from lerobot.processor import (
 )
 from safetensors import safe_open
 
+from .guard import MODE_STATS as _MODE_STATS
 from .guard import InputEnvelopeError, InputEnvelopeGuardStep
 from .models import DiagnosticFinding, DiagnosticStatus, PreflightReport, Provenance, Severity
 from .preflight import (
@@ -55,12 +56,6 @@ _OBSERVATION = "PRIVILEGE_OBSERVATION_STAT_DRIFT"
 _INTERMEDIATE = "PRIVILEGE_INTERMEDIATE_NON_FINITE"
 _NORMALIZERS = (NormalizerProcessorStep, UnnormalizerProcessorStep)
 _MASKED_NORMALIZERS = {"molmoact2_masked_normalizer", "molmoact2_masked_unnormalizer"}
-_REQUIRED = {
-    NormalizationMode.MEAN_STD: ("mean", "std"),
-    NormalizationMode.MIN_MAX: ("min", "max"),
-    NormalizationMode.QUANTILES: ("q01", "q99"),
-    NormalizationMode.QUANTILE10: ("q10", "q90"),
-}
 # These registry identifiers and persisted options are inspected in the reference
 # policy processors. We diff their JSON only; their constructors are not invoked.
 _FIXED_ACTION_CLIPS = {
@@ -243,19 +238,21 @@ def _static_pair(root: Path, policy: dict[str, Any]) -> _ArtifactPair:
                     )
                 )
         declared = [item for item in all_declared if item[0] == "unnormalize_outputs" and item[1] == "action"]
-        if len(declared) != 1 or declared[0][3] not in _REQUIRED:
+        if len(declared) != 1 or declared[0][3] not in _MODE_STATS:
             raise ValueError("No explicit active legacy action feature/mode contract is available")
         _, key, feature, mode = declared[0]
-        aliases = {f"action.{stat}": f"unnormalize_outputs.buffer_action.{stat}" for stat in _REQUIRED[mode]}
+        aliases = {
+            f"action.{stat}": f"unnormalize_outputs.buffer_action.{stat}" for stat in _MODE_STATS[mode]
+        }
         input_declared = [
-            item for item in all_declared if item[0] == "normalize_inputs" and item[3] in _REQUIRED
+            item for item in all_declared if item[0] == "normalize_inputs" and item[3] in _MODE_STATS
         ]
         all_aliases = dict(aliases)
         for group, input_key, _, input_mode in input_declared:
             all_aliases.update(
                 {
                     f"{input_key}.{stat}": f"{group}.buffer_{input_key.replace('.', '_')}.{stat}"
-                    for stat in _REQUIRED[input_mode]
+                    for stat in _MODE_STATS[input_mode]
                 }
             )
         raw_model = False
@@ -293,7 +290,7 @@ def _static_pair(root: Path, policy: dict[str, Any]) -> _ArtifactPair:
         input_steps, input_normalizers, input_errors = [], {}, {}
         for index, (group, input_key, input_feature, input_mode) in enumerate(input_declared):
             input_aliases = {
-                f"{input_key}.{stat}": all_aliases[f"{input_key}.{stat}"] for stat in _REQUIRED[input_mode]
+                f"{input_key}.{stat}": all_aliases[f"{input_key}.{stat}"] for stat in _MODE_STATS[input_mode]
             }
             input_state = {
                 alias: state[original] for alias, original in input_aliases.items() if original in state
@@ -538,7 +535,7 @@ def _guard_delta(
                 base_state = base_step.state_dict()
                 for key, feature in base_step.features.items():
                     mode = base_step.norm_map.get(feature.type, NormalizationMode.IDENTITY)
-                    required = _REQUIRED.get(mode, ())
+                    required = _MODE_STATS.get(mode, ())
                     if not required or (
                         feature.type != FeatureType.ACTION
                         and base_step.normalize_observation_keys is not None
@@ -573,7 +570,7 @@ def _guard_delta(
                         reason = "feature_excluded_from_normalization"
                     else:
                         candidate_mode = candidate_step.norm_map.get(feature.type, NormalizationMode.IDENTITY)
-                        needed = _REQUIRED.get(candidate_mode, ())
+                        needed = _MODE_STATS.get(candidate_mode, ())
                         if any(f"{key}.{stat}" not in candidate_step.state_dict() for stat in needed):
                             reason = "normalization_stat_key_bypass"
                         if kind in _MASKED_NORMALIZERS and feature.shape:
@@ -1098,7 +1095,7 @@ def _action_scale(artifact: _Artifact) -> tuple[torch.Tensor, list[tuple[int, st
     """The scale is the native inverse affine slope, including zero-span eps."""
     mapping = _action_affine(artifact)
     sources = [
-        (index, "action.std" if mode == "MEAN_STD" else "action." + _REQUIRED[NormalizationMode(mode)][1])
+        (index, "action.std" if mode == "MEAN_STD" else "action." + _MODE_STATS[NormalizationMode(mode)][1])
         for (index, _), mode in zip(mapping["sources"], mapping["modes"])
     ]
     return mapping["slope"], sources, mapping["modes"]
@@ -1236,7 +1233,7 @@ def _observation_maps(artifact: _Artifact, policy: dict[str, Any]) -> dict[str, 
             mode = step.norm_map.get(feature.type, NormalizationMode.IDENTITY)
             if mode is NormalizationMode.IDENTITY:
                 continue
-            if not isinstance(step, NormalizerProcessorStep) or mode not in _REQUIRED:
+            if not isinstance(step, NormalizerProcessorStep) or mode not in _MODE_STATS:
                 raise ValueError(f"Unsupported observation normalization direction or mode for {key}")
             if len(feature.shape) != 1 and feature.type is not FeatureType.VISUAL:
                 raise ValueError(f"Observation normalization requires a declared vector shape for {key}")
@@ -1244,7 +1241,7 @@ def _observation_maps(artifact: _Artifact, policy: dict[str, Any]) -> dict[str, 
                 raise ValueError(f"Invalid observation normalization epsilon for {key}")
             dtype = _runtime_dtype(config, index, step.dtype or torch.float32)
             values = {}
-            raw = {name: state.get(f"{key}.{name}") for name in _REQUIRED[mode]}
+            raw = {name: state.get(f"{key}.{name}") for name in _MODE_STATS[mode]}
             if any(tensor is None for tensor in raw.values()):
                 raise ValueError(f"Active observation buffers are incomplete for {key}")
             if feature.type is FeatureType.VISUAL:
@@ -1259,7 +1256,7 @@ def _observation_maps(artifact: _Artifact, policy: dict[str, Any]) -> dict[str, 
                 stat_shape = stat_shape or (1,) * len(feature.shape)
             else:
                 stat_shape = feature.shape
-            for stat in _REQUIRED[mode]:
+            for stat in _MODE_STATS[mode]:
                 tensor = state.get(f"{key}.{stat}")
                 if tensor is None:
                     raise ValueError(f"Active observation buffer {key}.{stat} is missing")
@@ -1277,7 +1274,7 @@ def _observation_maps(artifact: _Artifact, policy: dict[str, Any]) -> dict[str, 
                 offset = -input_center / input_scale
                 domain = (-3.0, 3.0)
             else:
-                low_name, high_name = _REQUIRED[mode]
+                low_name, high_name = _MODE_STATS[mode]
                 span = values[high_name] - values[low_name]
                 if (span < 0).any():
                     raise ValueError(f"Reversed observation interval for {key}")
@@ -1425,7 +1422,7 @@ def _observation_delta(
                     for name, values in current["stats"].items()
                     if name not in previous["stats"] or not torch.equal(values, previous["stats"][name])
                 ),
-                _REQUIRED[NormalizationMode(current["mode"])][0],
+                _MODE_STATS[NormalizationMode(current["mode"])][0],
             )
             tensor_key = f"{key}.{stat}"
             indices = mask.reshape(-1).nonzero().flatten().tolist()
@@ -1438,7 +1435,7 @@ def _observation_delta(
                 previous_index,
                 f"{key}.{stat}"
                 if stat in previous["stats"]
-                else f"{key}.{_REQUIRED[NormalizationMode(previous['mode'])][0]}",
+                else f"{key}.{_MODE_STATS[NormalizationMode(previous['mode'])][0]}",
                 indices,
             )
             source_is_eps = previous["eps"] != current["eps"] and all(
@@ -1538,7 +1535,7 @@ def _observation_probe_points(stages: list[dict[str, Any]]) -> torch.Tensor:
     if first["mode"] == NormalizationMode.MEAN_STD.value:
         mean, std = first["stats"]["mean"].double(), first["stats"]["std"].double()
         return torch.stack((mean - std, mean, mean + std))
-    low, high = _REQUIRED[NormalizationMode(first["mode"])]
+    low, high = _MODE_STATS[NormalizationMode(first["mode"])]
     lower, upper = first["stats"][low].double(), first["stats"][high].double()
     return torch.stack((lower, (lower + upper) / 2, upper))
 
@@ -1774,11 +1771,11 @@ def _relative_stage_affine(
     if mode is NormalizationMode.IDENTITY:
         return unit, zero
     state = step.state_dict()
-    if mode not in _REQUIRED or any(f"{key}.{stat}" not in state for stat in _REQUIRED[mode]):
+    if mode not in _MODE_STATS or any(f"{key}.{stat}" not in state for stat in _MODE_STATS[mode]):
         raise ValueError(f"Relative-action mapping requires complete active statistics for {key}")
     values = {
         stat: torch.broadcast_to(state[f"{key}.{stat}"].squeeze().to(dtype), (width,))
-        for stat in _REQUIRED[mode]
+        for stat in _MODE_STATS[mode]
     }
     inverse = isinstance(step, UnnormalizerProcessorStep)
     if mode is NormalizationMode.MEAN_STD:
@@ -1788,7 +1785,7 @@ def _relative_stage_affine(
             return values["std"].double(), values["mean"].double()
         denominator = (values["std"] + step.eps).double()
         return denominator.reciprocal(), -values["mean"].double() / denominator
-    low, high = _REQUIRED[mode]
+    low, high = _MODE_STATS[mode]
     span = values[high] - values[low]
     if (span < 0).any():
         raise ValueError(f"Reversed bounds in relative-action mapping for {key}")
@@ -1882,20 +1879,20 @@ def _relative_action_mapping(root: Path, policy: dict[str, Any], pair: _Artifact
                         or current_key in step.normalize_observation_keys
                     ):
                         mode = step.norm_map.get(feature.type, NormalizationMode.IDENTITY)
-                        if state_probe_points is None and mode in _REQUIRED:
+                        if state_probe_points is None and mode in _MODE_STATS:
                             raw = {
                                 name: torch.broadcast_to(
                                     step.state_dict()[f"{current_key}.{name}"].squeeze().float(),
                                     (state_width,),
                                 )
-                                for name in _REQUIRED[mode]
+                                for name in _MODE_STATS[mode]
                             }
                             if mode is NormalizationMode.MEAN_STD:
                                 state_probe_points = torch.stack(
                                     (raw["mean"] - raw["std"], raw["mean"], raw["mean"] + raw["std"])
                                 )
                             else:
-                                lower, upper = (raw[name] for name in _REQUIRED[mode])
+                                lower, upper = (raw[name] for name in _MODE_STATS[mode])
                                 state_probe_points = torch.stack((lower, (lower + upper) / 2, upper))
                         a, b = _relative_stage_affine(step, current_key, feature.type, state_width, dtype)
                         state_slope, state_offset = a * state_slope, a * state_offset + b
@@ -1925,7 +1922,7 @@ def _relative_action_mapping(root: Path, policy: dict[str, Any], pair: _Artifact
                 if role == "postprocessor":
                     raise ValueError("Observation guards require an observation-bearing preprocessor")
                 native = cls(**entry.get("config", {}))
-                if native.on_violation == "clamp" and (native.keys is None or current_key in native.keys):
+                if native.on_violation == "clamp" and native.selects(current_key):
                     nonlinear_guards.append({"step_index": index, "config": native.get_config()})
             elif cls is RelativeActionsProcessorStep and role == "preprocessor" and index == relative_index:
                 if current_key != "observation.state":
@@ -2408,7 +2405,7 @@ def _action_affine(artifact: _Artifact) -> dict[str, Any]:
             feature is None
             or feature.type != FeatureType.ACTION
             or len(feature.shape) != 1
-            or mode not in _REQUIRED
+            or mode not in _MODE_STATS
         ):
             raise ValueError("A supported one-dimensional action contract is required for affine comparison")
         state = step.state_dict()
@@ -2416,7 +2413,7 @@ def _action_affine(artifact: _Artifact) -> dict[str, Any]:
         if not math.isfinite(step.eps) or step.eps < 0:
             raise ValueError("Action affine epsilon must be finite and nonnegative")
         values = {}
-        for name in _REQUIRED[mode]:
+        for name in _MODE_STATS[mode]:
             tensor = state.get(f"action.{name}")
             if tensor is None:
                 raise ValueError(f"The action affine buffer action.{name} is missing")
@@ -2429,7 +2426,7 @@ def _action_affine(artifact: _Artifact) -> dict[str, Any]:
                 raise ValueError("Negative action std prevents a valid affine-envelope comparison")
             initial_domain = (-3.0, 3.0)
         else:
-            low_name, high_name = _REQUIRED[mode]
+            low_name, high_name = _MODE_STATS[mode]
             span = values[high_name] - values[low_name]
             if (span < 0).any():
                 raise ValueError("Reversed action bounds prevent a valid affine-envelope comparison")
@@ -2532,8 +2529,8 @@ def _affine_delta(
         source_key, old_source_key = key, old_key
         if bound_side is not None:
             stat_index = 0 if bound_side == "lower" else 1
-            source_key = "action." + _REQUIRED[NormalizationMode(new["modes"][-1])][stat_index]
-            old_source_key = "action." + _REQUIRED[NormalizationMode(old["modes"][-1])][stat_index]
+            source_key = "action." + _MODE_STATS[NormalizationMode(new["modes"][-1])][stat_index]
+            old_source_key = "action." + _MODE_STATS[NormalizationMode(old["modes"][-1])][stat_index]
         elif check == _ENVELOPE and new["modes"][-1] == "MEAN_STD" and not bool(displacement[selected].any()):
             source_key = old_source_key = "action.std"
         source_tensor = candidate_pair[1][0][index].state_dict()[source_key]

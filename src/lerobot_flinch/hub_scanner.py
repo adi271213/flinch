@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import fnmatch
+import functools
 import hashlib
 import html
 import json
@@ -29,6 +30,7 @@ import torch
 from huggingface_hub import HfApi, get_hf_file_metadata, hf_hub_download, hf_hub_url
 from safetensors.torch import save_file
 
+from .hub_source import _UNAVAILABLE_ERRORS
 from .models import DiagnosticFinding, DiagnosticStatus, PreflightReport, Severity
 from .preflight import _local_file, _verified_legacy_values, run_preflight
 from .temporal import run_temporal_audit
@@ -39,16 +41,11 @@ RETRY_ATTEMPTS = 4
 RETRY_BASE_SECONDS = 0.5
 RETRY_MAX_SECONDS = 8.0
 _sleep = time.sleep  # Patched in tests.
-_NEVER_RETRY = {
-    "OfflineModeIsEnabled",
-    "RepositoryNotFoundError",
-    "GatedRepoError",
-    "RevisionNotFoundError",
-    "EntryNotFoundError",
-    "LocalEntryNotFoundError",
-}
+# Missing, private or gated repos (shared with hub_source) plus offline mode and missing files.
+_NEVER_RETRY = _UNAVAILABLE_ERRORS | {"OfflineModeIsEnabled", "EntryNotFoundError", "LocalEntryNotFoundError"}
 
 
+@functools.cache
 def _transport_error_types() -> tuple[type[BaseException], ...]:
     """Use concrete installed HTTP-client errors, which do not inherit built-in timeouts."""
     errors: list[type[BaseException]] = [ConnectionError, TimeoutError, URLError, IncompleteRead]
@@ -664,12 +661,11 @@ def _weight_file(filename: str) -> bool:
 
 
 def _download_error(filename: str | None, exc: Exception) -> dict[str, Any]:
-    status = getattr(getattr(exc, "response", None), "status_code", getattr(exc, "code", None))
     return {
         "file_path": filename,
         "error": f"{type(exc).__name__}: {exc}",
         "error_type": type(exc).__name__,
-        "http_status": status if isinstance(status, int) else None,
+        "http_status": _http_status(exc),
     }
 
 
