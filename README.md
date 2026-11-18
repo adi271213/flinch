@@ -95,7 +95,9 @@ Every finding gets one of four labels:
 | `CONFLICT` | Two files in the checkpoint disagree with each other. |
 | `UNKNOWN` | Flinch couldn't check this, so it won't pretend it did. |
 
-Exit codes: `0` passed, `1` the checkpoint has a problem (`FAIL` or `CONFLICT`, or anything `--strict` or `--baseline` treats as blocking), `2` you passed a bad argument, `3` Flinch itself couldn't finish (a crash, the Hub was unreachable, or an output couldn't be written). If a real problem is found, `1` wins over `3`.
+Exit codes: `0` no problem found, `1` the checkpoint has a problem (`FAIL` or `CONFLICT`, or anything `--strict` or `--baseline` treats as blocking), `2` you passed a bad argument, `3` Flinch itself couldn't finish (a crash, the Hub was unreachable, or an output couldn't be written). If a real problem is found, `1` wins over `3`.
+
+**Exit 0 is not "everything verified".** It means no problem was found in the checks that could run. Every run ends with a `COVERAGE` line listing anything Flinch couldn't verify (also in the JSON report under `coverage`). To use Flinch as a deployment gate, run it with `--strict`, which fails on unverified checks too.
 
 Flinch never guesses physical units. A tensor's shape can't tell you whether a joint is in radians or degrees, so that stays `UNKNOWN` unless you declare it with `--metadata`.
 

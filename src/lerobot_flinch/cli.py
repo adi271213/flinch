@@ -326,6 +326,23 @@ def _print_report(report: PreflightReport) -> None:
             context = _finding_context(finding)
             if context:
                 print(f"    {context}")
+    _print_coverage(report)
+
+
+def _print_coverage(report: PreflightReport) -> None:
+    """End with what the result does and doesn't cover, so exit 0 is never read as 'all verified'."""
+    coverage = report.coverage()
+    missing = coverage["not_verified"]
+    print(f"COVERAGE: {coverage['checks_verified']} of {coverage['checks_run']} checks verified")
+    if missing:
+        print(f"  Not verified: {', '.join(missing)}")
+    if coverage["not_declared"]:
+        print(f"  Not declared (physical meaning unknown): {', '.join(coverage['not_declared'])}")
+    if missing and report.exit_code() == 0:
+        print(
+            "  Exit 0 means no problem was found in the checks that ran, not that everything was verified."
+            " Use --strict to fail on unverified checks."
+        )
 
 
 def _is_prior_report(path: Path) -> bool:

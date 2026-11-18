@@ -394,11 +394,38 @@ class PreflightReport:
             return EXIT_TOOL_ERROR
         return EXIT_FINDINGS if self.has_failures() else EXIT_OK
 
+    def coverage(self) -> dict[str, Any]:
+        """Which checks reached a verdict, and which could not be verified.
+
+        Exit code 0 means no problem was found in the checks that could run. It does not
+        mean every check ran; ``not_verified`` lists the ones that did not.
+        """
+        # Informational notes (undeclared units/frames) are listed separately, not counted as checks.
+        checks = list(
+            dict.fromkeys(f.check_id for f in self.findings if not f.details.get("strict_exempt", False))
+        )
+        unknown = [finding for finding in self.findings if finding.status is DiagnosticStatus.UNKNOWN]
+        not_verified = list(
+            dict.fromkeys(f.check_id for f in unknown if not f.details.get("strict_exempt", False))
+        )
+        not_declared = list(
+            dict.fromkeys(
+                str(f.details.get("field", f.check_id)) for f in unknown if f.details.get("strict_exempt")
+            )
+        )
+        return {
+            "checks_run": len(checks),
+            "checks_verified": len([check for check in checks if check not in not_verified]),
+            "not_verified": not_verified,
+            "not_declared": not_declared,
+        }
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "checkpoint_dir": str(self.checkpoint_dir),
             "has_failures": self.has_failures(),
             "exit_code": self.exit_code(),
+            "coverage": self.coverage(),
             "gate_policy": {
                 "strict": self.strict,
                 "baseline_requested": self.baseline_requested,

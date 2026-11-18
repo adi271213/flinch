@@ -284,3 +284,20 @@ def test_unavailable_repository_error_is_printed_once_and_still_reported(
     report = json.loads(report_path.read_text(encoding="utf-8"))
     assert [f["check_id"] for f in report["findings"]] == ["RUNNER_ERROR"]
     assert report["exit_code"] == 3
+
+
+def test_exit_zero_states_what_was_not_verified(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    checkpoint = make_bug_fixtures(tmp_path / "fixtures")["bug_5315_temporal_anchor"]
+    report_path = tmp_path / "report.json"
+
+    assert main(["--policy", str(checkpoint), "--report", str(report_path)]) == 0
+    output = capsys.readouterr().out
+    assert "Not verified: TEMPORAL_ANCHOR_MISMATCH" in output
+    assert "Exit 0 means no problem was found in the checks that ran" in output
+
+    coverage = json.loads(report_path.read_text(encoding="utf-8"))["coverage"]
+    assert "TEMPORAL_ANCHOR_MISMATCH" in coverage["not_verified"]
+    assert "PHYSICAL_SEMANTICS" not in coverage["not_verified"]  # Informational, listed separately.
+    assert "joint_angle_units" in coverage["not_declared"]
+    assert coverage["checks_verified"] == coverage["checks_run"] - len(coverage["not_verified"])
+    assert main(["--policy", str(checkpoint), "--strict"]) == 1  # The gate mode refuses unverified checks.
