@@ -1,5 +1,6 @@
 recursive-include tests *.py
 recursive-include scripts *.py
+recursive-include examples *.py
 recursive-include docs *.md *.gif
 include CONTRIBUTING.md SECURITY.md LICENSE .editorconfig .env.example
 recursive-include .github *.md *.yml
