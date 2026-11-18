@@ -82,6 +82,8 @@ flinch --policy ./ckpt --strict
 
 For `--sample`, save an `.npz` whose keys match the checkpoint's feature names, like `observation.state`. Put `action` in it too (or in a `sample_action.npz` next to it) if you want the postprocessor checked as well.
 
+Best of all, pass a whole recorded rollout (frames stacked along the first axis). Each near-zero-std finding then says whether your real data ever moved those coordinates, and by how much in normalized units.
+
 ## 🚦 Reading the output
 
 Every finding gets one of four labels:

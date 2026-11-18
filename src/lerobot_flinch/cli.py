@@ -11,6 +11,8 @@ from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 from . import __version__
 from .hub_source import (
     HubSourceError,
@@ -83,6 +85,54 @@ def _collect(
         report.findings.append(_runner_error(stage, exc))
 
 
+def _add_sample_evidence(report: PreflightReport, sample: Path) -> None:
+    """Say what the recorded sample did at each near-zero-spread coordinate.
+
+    The finding stays a FAIL either way: a coordinate that is constant in one recording is
+    still one sensor glitch away from the full gain. This only tells the user how close
+    their own data came.
+    """
+    try:
+        with np.load(sample, allow_pickle=False) as archive:
+            data = {key: archive[key] for key in archive.files}
+    except (OSError, ValueError):
+        return  # The trace already reports an unreadable sample.
+    for finding in report.findings:
+        details, provenance = finding.details, finding.provenance
+        values = data.get(str(details.get("feature_key")))
+        gains = details.get("effective_gains_with_eps")
+        if (
+            finding.check_id != "PATHOLOGICAL_STD_GAIN"
+            or finding.status is not DiagnosticStatus.FAIL
+            or provenance is None
+            or not provenance.violating_indices
+            or values is None
+            or not isinstance(gains, list)
+        ):
+            continue
+        width = math.prod(details.get("tensor_shape") or [values.shape[-1]])
+        if not width or values.size % width:
+            continue
+        indices = provenance.violating_indices[: len(gains)]
+        frames = values.reshape(-1, width).astype(np.float64)
+        spread = np.ptp(frames[:, indices], axis=0)
+        normalized = spread * np.asarray(gains[: len(indices)], dtype=np.float64)
+        details["sample_frames"] = len(frames)
+        details["sample_raw_spread"] = spread.tolist()
+        details["sample_normalized_spread"] = normalized.tolist()
+        if len(frames) == 1:
+            finding.summary += (
+                " Your --sample has one frame, so it can't show whether these coordinates move."
+            )
+        elif not normalized.any():
+            finding.summary += f" Across the {len(frames)} frames of your --sample they never move."
+        else:
+            finding.summary += (
+                f" Across the {len(frames)} frames of your --sample they move by up to "
+                f"{normalized.max():.4g} in normalized units."
+            )
+
+
 def run_checks(
     policy: Path,
     sample: Path | None = None,
@@ -103,6 +153,7 @@ def run_checks(
     _collect(report, "temporal audit", lambda: run_temporal_audit(policy, **metadata_options))
     if sample is not None:
         _collect(report, "offline trace", lambda: run_offline_trace(policy, Path(sample)))
+        _add_sample_evidence(report, Path(sample))
     if baseline is not None:
 
         def compare() -> list[DiagnosticFinding]:
