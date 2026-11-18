@@ -126,6 +126,8 @@ The default is to raise `InputEnvelopeError` with the key and bounded coordinate
 
 `add_input_guard` modifies the supplied pipeline in place. Calling it again reconfigures a single helper-managed guard; manual or multiple guards require explicit management. Later processor steps may change the values again, so this is an insertion-point check, not a guarantee about the final policy input or hardware safety. Offline audits remain read-only and run no policy, simulator or motor commands.
 
+To see it work, run `python examples/guard_demo.py`: a simulated robot holding still gets joint commands of 13-72 from 0.001 of sensor noise, until the guard stops it.
+
 The guard saves and loads with the pipeline; `PolicyProcessorPipeline.from_pretrained` finds it on its own. In clamp mode, the first clip logs a warning and `guard.clamp_count` keeps a running total, so clipping is never silent.
 
 ## ⚙️ How it works
