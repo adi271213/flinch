@@ -15,5 +15,5 @@ def test_guard_demo_shows_the_explosion_and_the_stop(capsys: pytest.CaptureFixtu
     without, with_guard = capsys.readouterr().out.split("With the guard")
     commands = [float(line.split()[-1]) for line in without.splitlines() if "largest joint command" in line]
     assert len(commands) == 5 and min(commands) > 10
-    assert "guard stopped the input" in with_guard
+    assert "guard raised before the policy saw the input" in with_guard
     assert "flattened indices [2]" in with_guard

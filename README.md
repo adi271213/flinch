@@ -27,7 +27,7 @@ I pointed it at 100 public LeRobot checkpoints. Some of what turned up:
 | `iantc104/Diffusion-RPL-UR5-PegInsert-v0` | min equals max for 7 environment-state coordinates | becomes ~40,000,000 |
 | `y1y2y3/smolvla_base1` | a 129-byte Git LFS pointer was saved instead of the stats tensor | the stats are simply missing |
 
-The numerical probes are offsets from the saved mean or lower bound, using the inspected float32 formulas, saved normalization mode and `eps=1e-8`. Every row is pinned to an exact commit. The full write-up is in [docs/audit-evidence.md](docs/audit-evidence.md). These are artifact findings and numerical risks; I didn't run any of these on a real robot.
+The numerical probes are offsets from the saved mean or lower bound, using the inspected float32 formulas, saved normalization mode and `eps=1e-8`. Every row is pinned to an exact commit. The full results for all 100 checkpoints, with each finding labelled as a confirmed defect, a numerical risk or expected behaviour, are in [docs/hub-audit/](docs/hub-audit/); the write-up is in [docs/audit-evidence.md](docs/audit-evidence.md). These are artifact findings and numerical risks; I didn't run any of these on a real robot.
 
 ## 🚀 Quick start
 
@@ -128,7 +128,24 @@ The default is to raise `InputEnvelopeError` with the key and bounded coordinate
 
 `add_input_guard` modifies the supplied pipeline in place. Calling it again reconfigures a single helper-managed guard; manual or multiple guards require explicit management. Later processor steps may change the values again, so this is an insertion-point check, not a guarantee about the final policy input or hardware safety. Offline audits remain read-only and run no policy, simulator or motor commands.
 
-To see it work, run `python examples/guard_demo.py`: a simulated robot holding still gets joint commands of 13-72 from 0.001 of sensor noise, until the guard stops it.
+To see it work, run `python examples/guard_demo.py`: a simulated robot holding still gets joint commands of 13-72 from 0.001 of sensor noise, until the guard raises.
+
+**What the guard is, and isn't.** It is a check on the policy's input: it raises before an exploded value reaches the policy. It is not a safety controller. It doesn't stop motors, run a watchdog or choose a fallback, and a Python exception is not a safe stop by itself. Your control loop has to catch the error and do something safe:
+
+```python
+from lerobot_flinch.guard import InputEnvelopeError
+
+try:
+    batch = preprocessor(observation)
+except InputEnvelopeError as error:
+    robot.hold_position()  # your controller's safe response: hold, brake, or hand over to a human
+    log.error(error)
+    continue
+action = postprocessor(policy.select_action(batch))
+```
+
+Clamp mode keeps the loop running but changes what the policy sees, and nobody has measured whether that helps or hurts a given task. Prefer raising unless you have tested clamping in closed loop.
+
 
 The guard saves and loads with the pipeline; `PolicyProcessorPipeline.from_pretrained` finds it on its own. In clamp mode, the first clip logs a warning and `guard.clamp_count` keeps a running total, so clipping is never silent.
 

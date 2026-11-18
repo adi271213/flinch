@@ -45,7 +45,11 @@ def run(pipeline: PolicyProcessorPipeline, label: str) -> None:
         try:
             normalized = pipeline({KEY: state[None]})[KEY][0]
         except InputEnvelopeError as error:
-            print(f"  step {step}: guard stopped the input -> robot holds position\n    {error}")
+            # The guard only raises; stopping here is this demo's choice. A real controller must
+            # catch this and take its own safe action (hold, brake, hand over).
+            print(
+                f"  step {step}: guard raised before the policy saw the input; this demo stops sending commands\n    {error}"
+            )
             return
         command = 0.05 * normalized  # stand-in policy
         print(f"  step {step}: largest joint command {command.abs().max().item():8.2f}")
