@@ -224,7 +224,7 @@ weakened = root / "guard_weakened"
 shutil.copytree(root / "guarded_clean", weakened)
 path = weakened / "policy_preprocessor.json"
 config = json.loads(path.read_text())
-next(step for step in config["steps"] if step.get("registry_name") == "flinch_input_guard")["config"]["max_abs"] = 100.0
+next(step for step in config["steps"] if step.get("class", "").endswith(".InputEnvelopeGuardStep"))["config"]["max_abs"] = 100.0
 path.write_text(json.dumps(config), encoding="utf-8")
 sample = {"observation.state": torch.full((1, 14), 20.0)}
 try:

@@ -776,13 +776,33 @@ def _trace_pipeline(
         indices: list[int],
         status: DiagnosticStatus = DiagnosticStatus.FAIL,
     ) -> None:
+        # The first axis is the batch/frame axis. For a multi-frame rollout, report the
+        # feature coordinate and how many frames hit it, not positions in the stacked array.
+        shape = details.get("tensor_shape") or []
+        frames = shape[0] if len(shape) >= 2 else 1
+        width = max(1, math.prod(shape[1:])) if len(shape) >= 2 else max(1, math.prod(shape))
+        coordinates = sorted({flat % width for flat in indices})
+        where = ""
+        if frames > 1 and indices:
+            details = {
+                **details,
+                "flattened_indices": indices,
+                "feature_coordinates": coordinates,
+                "frames_affected": len({flat // width for flat in indices}),
+                "frames_total": frames,
+            }
+            where = (
+                f", coordinate(s) {coordinates[:8]}{' ...' if len(coordinates) > 8 else ''} "
+                f"in {details['frames_affected']} of {frames} frames"
+            )
+            indices = coordinates
         findings.append(
             DiagnosticFinding(
                 check,
                 status,
                 Severity.CRITICAL if status is DiagnosticStatus.FAIL else Severity.INFO,
                 (
-                    f"{check} at {role} step {index}, {key}."
+                    f"{check} at {role} step {index}, {key}{where}."
                     if status is DiagnosticStatus.FAIL
                     else f"Missing stat keys leave the intended nonidentity transform unknown at {role} step {index}, {key}."
                 ),

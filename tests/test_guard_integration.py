@@ -144,7 +144,7 @@ def test_numeric_probe_executes_real_clamp_and_keeps_normalizer_prefix() -> None
     entries = [
         {"registry_name": "normalizer_processor", "config": normalizer.get_config()},
         {
-            "registry_name": "flinch_input_guard",
+            "class": "lerobot_flinch.guard.InputEnvelopeGuardStep",
             "config": {"max_abs": 0.5, "on_violation": "clamp", "keys": ["observation.state"]},
         },
     ]

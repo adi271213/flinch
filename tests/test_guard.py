@@ -363,3 +363,39 @@ def test_guard_real_limit_does_not_round_outward_in_low_precision(dtype, limit):
     assert float(boundary[0]) > limit
     with pytest.raises(InputEnvelopeError):
         InputEnvelopeGuardStep(max_abs=limit).observation({"observation.state": boundary})
+
+
+def test_clamps_are_counted_and_logged_once(caplog: pytest.LogCaptureFixture) -> None:
+    guard = InputEnvelopeGuardStep(max_abs=1.0, on_violation="clamp")
+    with caplog.at_level("WARNING"):
+        for _ in range(3):
+            guard.observation({"observation.state": torch.tensor([0.5, 4.0, -9.0])})
+    assert guard.clamp_count == 6
+    assert caplog.text.count("Input guard clamped observation.state") == 1
+    assert "clamp_count" not in guard.get_config()
+
+
+def test_saved_guard_loads_without_importing_flinch(fixtures: dict[str, Path], tmp_path: Path) -> None:
+    import subprocess
+    import sys
+
+    from tests.subprocess_env import source_subprocess_env
+
+    add_input_guard(_preprocessor(fixtures["clean_act_modern"])).save_pretrained(
+        tmp_path / "saved", config_filename="preprocessor_config.json"
+    )
+    script = (
+        "import sys; from lerobot.processor import PolicyProcessorPipeline\n"
+        "p = PolicyProcessorPipeline.from_pretrained(sys.argv[1], config_filename='preprocessor_config.json',"
+        " local_files_only=True)\n"
+        "print([type(s).__name__ for s in p.steps])\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(tmp_path / "saved")],
+        env=source_subprocess_env(),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "InputEnvelopeGuardStep" in result.stdout

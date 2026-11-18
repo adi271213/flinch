@@ -1,14 +1,15 @@
 """An optional native runtime guard for selected floating observation tensors.
 
 ``add_input_guard`` selects complete, actively normalized observation features.
-Use explicit ``keys`` to choose another envelope deliberately. Import this module
-before loading a pipeline that includes the registered ``flinch_input_guard`` step.
+Use explicit ``keys`` to choose another envelope deliberately. A saved pipeline records
+the step by its import path, so LeRobot loads it without any extra import.
 """
 
 from __future__ import annotations
 
+import logging
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from numbers import Real
 from typing import Any
 
@@ -22,7 +23,6 @@ from lerobot.processor import (
     NormalizerProcessorStep,
     ObservationProcessorStep,
     PolicyProcessorPipeline,
-    ProcessorStepRegistry,
     RelativeActionsProcessorStep,
     RenameObservationsProcessorStep,
     UnnormalizerProcessorStep,
@@ -53,8 +53,9 @@ class InputEnvelopeError(ValueError):
         )
 
 
+# Deliberately not registered by name: LeRobot then saves the full import path and imports it
+# on load, so a deployment can't fail just because it forgot to import this module first.
 @dataclass
-@ProcessorStepRegistry.register(name="flinch_input_guard")
 class InputEnvelopeGuardStep(ObservationProcessorStep):  # type: ignore[misc]  # LeRobot is untyped.
     """Raise or clamp selected observations; non-finite values always raise.
 
@@ -67,6 +68,8 @@ class InputEnvelopeGuardStep(ObservationProcessorStep):  # type: ignore[misc]  #
     on_violation: str = "raise"
     keys: list[str] | None = None
     managed_by_helper: bool = False
+    # How many values clamp mode has rewritten since this step was created; not saved.
+    clamp_count: int = field(default=0, init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if isinstance(self.max_abs, bool) or not isinstance(self.max_abs, Real):
@@ -117,6 +120,13 @@ class InputEnvelopeGuardStep(ObservationProcessorStep):  # type: ignore[misc]  #
                 continue
             if self.on_violation == "clamp" and bool(finite.all()):
                 result[key] = value.clamp(-limit, limit)
+                if self.clamp_count == 0:
+                    logging.getLogger(__name__).warning(
+                        "Input guard clamped %s to ±%g; later clamps are counted in clamp_count.",
+                        key,
+                        self.max_abs,
+                    )
+                self.clamp_count += int(outside.sum())
                 continue
             rejected = (~finite | outside).reshape(-1)
             total_count = int(rejected.sum())
