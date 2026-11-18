@@ -4,7 +4,7 @@ Run:  python examples/guard_demo.py
 
 Everything here is simulated: the "robot" is a 4-joint state with 1e-3 of sensor noise,
 and the "policy" is a stand-in that outputs a command proportional to its normalized
-input. Joint 2's saved std is 1.5e-6, like the public checkpoints Flinch found on the Hub.
+input. Joint 2's saved std is 1.5e-6: it barely moved in the training data.
 """
 
 from __future__ import annotations

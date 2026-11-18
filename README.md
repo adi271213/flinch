@@ -8,26 +8,13 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue)](pyproject.toml)
 
-<img src="docs/demo.gif" alt="Flinch auditing a public xArm checkpoint from the Hugging Face Hub and failing it for a 149,857x input gain" width="820">
+<img src="docs/demo.gif" alt="Flinch auditing a public checkpoint from the Hugging Face Hub" width="820">
 
 </div>
 
 A LeRobot checkpoint can load without a single warning and still have broken input conditioning. When an active normalization mode divides by a nearly zero standard deviation (plus a tiny `eps`), a small sensor perturbation can become a huge policy input. That is a numerical risk; it does not establish how a robot will move.
 
 Flinch looks for that before anything moves. It reads the checkpoint's processor files, runs LeRobot's own processor code on a few test inputs on your CPU, and tells you exactly which step, key and coordinate is wrong.
-
-## 🔍 What it found on the Hugging Face Hub
-
-I pointed it at 100 public LeRobot checkpoints. Some of what turned up:
-
-| Checkpoint | Problem | Result of a synthetic +0.20 perturbation |
-| --- | --- | --- |
-| `jhseon-holiday/vqbet_xarm_holi_test` | `observation.state` std is 6.7e-6 at index 4 | becomes ~29,971 (149,857× gain) |
-| `HaomingSong/lerobot-pi0-bridge` | `observation.state` std is exactly 0 at index 6 | becomes ~20,000,000 |
-| `iantc104/Diffusion-RPL-UR5-PegInsert-v0` | min equals max for 7 environment-state coordinates | becomes ~40,000,000 |
-| `y1y2y3/smolvla_base1` | a 129-byte Git LFS pointer was saved instead of the stats tensor | the stats are simply missing |
-
-The numerical probes are offsets from the saved mean or lower bound, using the inspected float32 formulas, saved normalization mode and `eps=1e-8`. Every row is pinned to an exact commit. The full results for all 100 checkpoints, with each finding labelled as a confirmed defect, a numerical risk or expected behaviour, are in [docs/hub-audit/](docs/hub-audit/); the write-up is in [docs/audit-evidence.md](docs/audit-evidence.md). These are artifact findings and numerical risks; I didn't run any of these on a real robot.
 
 ## 🚀 Quick start
 
@@ -212,7 +199,7 @@ Set `HF_HUB_OFFLINE=1` to stop any Hub downloads.
 
 ## 🛰️ Scanning the Hub
 
-The script behind the findings table above:
+To audit many public checkpoints at once:
 
 ```bash
 python scripts/scan_hub.py --targeted --limit 100 --output-dir ./hub-audit
