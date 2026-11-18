@@ -3,8 +3,8 @@
 This is a maintained summary of historical executions, not a fresh scan or a claim
 that later source revisions passed the same checks. The underlying local records
 are `hub_100_report.json` / `.md`, the 14-case head-to-head report, and the CI matrix
-report. Raw checkpoint caches, samples and verbose research archives are not shipped
-with the package. The pinned public artifacts below identify the inputs independently
+report. The full 100-checkpoint results are published in [hub-audit/](hub-audit/). Raw checkpoint caches,
+samples and verbose research archives are not shipped with the package. The pinned public artifacts below identify the inputs independently
 of those local paths.
 
 ## Public checkpoint audit
