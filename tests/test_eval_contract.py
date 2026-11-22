@@ -9,11 +9,11 @@ import pytest
 
 from lerobot_flinch.cli import main
 from lerobot_flinch.eval_contract import (
-    check_dataset,
     check_env,
     check_processor_steps,
+    check_task_text,
     load_env_config,
-    read_dataset_meta,
+    read_dataset_tasks,
 )
 from lerobot_flinch.models import DiagnosticStatus
 
@@ -26,16 +26,6 @@ SMOLVLA_LIBERO = {  # Shape of HuggingFaceVLA/smolvla_libero's config.json.
     "type": "smolvla",
     "input_features": {**_images("image", "image2"), "observation.state": {"type": "STATE", "shape": [8]}},
     "output_features": {"action": {"type": "ACTION", "shape": [7]}},
-}
-PI05_BASE = {  # Shape of lerobot/pi05_base's config.json: state/action padded to 32 on purpose.
-    "type": "pi05",
-    "max_state_dim": 32,
-    "max_action_dim": 32,
-    "input_features": {
-        **_images("base_0_rgb", "left_wrist_0_rgb", "right_wrist_0_rgb", size=224),
-        "observation.state": {"type": "STATE", "shape": [32]},
-    },
-    "output_features": {"action": {"type": "ACTION", "shape": [32]}},
 }
 
 
@@ -128,67 +118,27 @@ def test_unknown_env_option_is_rejected() -> None:
         load_env_config("libero", {"no_such_field": "1"})
 
 
-# --- #4517 / #2963 dataset features, #4045 / #4548 task text ----------------------------------
+# --- #4045 / #4548 task text -----------------------------------------------------------------
 
 
-def _info(state: int, action: int, cameras: int) -> dict[str, object]:
-    features = {
-        f"observation.images.cam{i}": {"dtype": "video", "shape": [3, 256, 256]} for i in range(cameras)
-    }
-    features["observation.state"] = {"dtype": "float32", "shape": [state]}
-    features["action"] = {"dtype": "float32", "shape": [action]}
-    return {"features": features}
-
-
-def test_padded_state_and_action_are_not_a_mismatch() -> None:
-    finding = _status(check_dataset(PI05_BASE, _info(8, 7, cameras=3), None), "DATASET_FEATURE_MISMATCH")
-    assert finding.status is DiagnosticStatus.PASS  # #2963: 32 is deliberate padding.
-
-
-def test_camera_shortfall_and_unpadded_shape_mismatch_conflict() -> None:
-    finding = _status(check_dataset(PI05_BASE, _info(8, 7, cameras=2), None), "DATASET_FEATURE_MISMATCH")
-    assert finding.status is DiagnosticStatus.CONFLICT
-    assert finding.details["problems"] == ["the checkpoint expects 3 camera(s), the dataset has 2"]
-    finding = _status(check_dataset(SMOLVLA_LIBERO, _info(6, 7, cameras=2), None), "DATASET_FEATURE_MISMATCH")
-    assert finding.details["problems"] == [
-        "observation.state is [8] in the checkpoint but [6] in the dataset"
-    ]
-
-
-def test_camera_names_are_not_compared() -> None:
-    renamed = {
-        **SMOLVLA_LIBERO,
-        "input_features": {
-            **_images("camera1", "camera2"),
-            "observation.state": {"type": "STATE", "shape": [8]},
-        },
-    }
-    assert (
-        _status(check_dataset(renamed, _info(8, 7, 2), None), "DATASET_FEATURE_MISMATCH").status
-        is DiagnosticStatus.PASS
-    )
-
-
-def test_task_identifiers_warn_and_sentences_do_not(tmp_path: Path) -> None:
-    ids = check_dataset(SMOLVLA_LIBERO, _info(8, 7, 2), ["CloseFridge", "OpenDrawer"])
+def test_task_identifiers_warn_and_sentences_do_not() -> None:
+    ids = check_task_text(["CloseFridge", "OpenDrawer"])
     finding = _status(ids, "TASK_TEXT_FORMAT")
     assert finding.status is DiagnosticStatus.PASS and finding.details["advisory"] is True
-    sentences = check_dataset(SMOLVLA_LIBERO, _info(8, 7, 2), ["put the bowl on the plate"])
-    assert not [f for f in sentences if f.check_id == "TASK_TEXT_FORMAT"]
-    unreadable = check_dataset(SMOLVLA_LIBERO, _info(8, 7, 2), None)
+    assert check_task_text(["put the bowl on the plate"]) == []
+    unreadable = check_task_text(None)
     assert _status(unreadable, "TASK_TEXT_FORMAT").status is DiagnosticStatus.UNKNOWN
 
 
 def _dataset(root: Path, tasks: list[str]) -> Path:
     (root / "meta").mkdir(parents=True)
-    (root / "meta" / "info.json").write_text(json.dumps(_info(8, 7, 2)))
+    (root / "meta" / "info.json").write_text("{}")
     (root / "meta" / "tasks.jsonl").write_text("".join(json.dumps({"task": t}) + "\n" for t in tasks))
     return root
 
 
 def test_reads_tasks_jsonl(tmp_path: Path) -> None:
-    info, tasks = read_dataset_meta(_dataset(tmp_path / "ds", ["CloseFridge"]))
-    assert tasks == ["CloseFridge"] and "action" in info["features"]
+    assert read_dataset_tasks(_dataset(tmp_path / "ds", ["CloseFridge"])) == ["CloseFridge"]
 
 
 def test_reads_tasks_parquet_from_either_column(tmp_path: Path) -> None:
@@ -199,7 +149,7 @@ def test_reads_tasks_parquet_from_either_column(tmp_path: Path) -> None:
         (root / "meta").mkdir(parents=True)
         (root / "meta" / "info.json").write_text("{}")
         pq.write_table(pa.table({"task_index": [0], column: ["OpenDrawer"]}), root / "meta" / "tasks.parquet")
-        assert read_dataset_meta(root)[1] == ["OpenDrawer"]
+        assert read_dataset_tasks(root) == ["OpenDrawer"]
 
 
 # --- CLI ---------------------------------------------------------------------------------------

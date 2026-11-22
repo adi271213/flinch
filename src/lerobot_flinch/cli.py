@@ -15,11 +15,11 @@ import numpy as np
 
 from . import __version__
 from .eval_contract import (
-    check_dataset,
     check_env,
     check_processor_steps,
+    check_task_text,
     load_env_config,
-    read_dataset_meta,
+    read_dataset_tasks,
 )
 from .hub_source import (
     HubSourceError,
@@ -190,7 +190,7 @@ def _evaluation_contract(policy: Path, env: Any | None, dataset: Path | None) ->
     if env is not None:
         findings += check_env(config, env)
     if dataset is not None:
-        findings += check_dataset(config, *read_dataset_meta(dataset))
+        findings += check_task_text(read_dataset_tasks(dataset))
     return findings
 
 
@@ -448,7 +448,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--dataset",
-        help="Dataset the checkpoint will be fine-tuned on or was trained on: local folder or hf://owner/name",
+        help="Dataset the checkpoint was trained on, to check its task text: local folder or hf://owner/name",
     )
     parser.add_argument(
         "--std-threshold",

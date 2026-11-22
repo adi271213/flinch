@@ -1,4 +1,4 @@
-"""Does a checkpoint match the environment and dataset it will be evaluated or fine-tuned with?
+"""Does a checkpoint match the environment it will be evaluated in and the tasks it learned?
 
 Every check here comes from a mismatch LeRobot users reported, measured and could not see in
 the logs. All of them read files only: the checkpoint's config and processor JSON, LeRobot's
@@ -243,9 +243,8 @@ def check_env(config: dict[str, Any], env: Any) -> list[DiagnosticFinding]:
 # --- Against a dataset ----------------------------------------------------------------------
 
 
-def read_dataset_meta(root: Path) -> tuple[dict[str, Any], list[str] | None]:
-    """The dataset's feature declarations and task strings (None when they can't be read)."""
-    info = json.loads((root / "meta" / "info.json").read_text(encoding="utf-8"))
+def read_dataset_tasks(root: Path) -> list[str] | None:
+    """The dataset's task strings, or None when they can't be read."""
     tasks: list[str] | None = None
     jsonl = root / "meta" / "tasks.jsonl"
     parquet = root / "meta" / "tasks.parquet"
@@ -265,50 +264,12 @@ def read_dataset_meta(root: Path) -> tuple[dict[str, Any], list[str] | None]:
             column = "task" if "task" in table.column_names else "__index_level_0__"
             if column in table.column_names:
                 tasks = [str(task) for task in table.column(column).to_pylist()]
-    return info, tasks
+    return tasks
 
 
-def check_dataset(
-    config: dict[str, Any], info: dict[str, Any], tasks: list[str] | None
-) -> list[DiagnosticFinding]:
-    """#4517, #2963 (features) and #4045, #4548 (task text)."""
+def check_task_text(tasks: list[str] | None) -> list[DiagnosticFinding]:
+    """#4045, #4548: a policy trained on bare task IDs, evaluated with sentences."""
     findings: list[DiagnosticFinding] = []
-    declared = info.get("features") or {}
-    padded = {"observation.state": config.get("max_state_dim"), "action": config.get("max_action_dim")}
-    checkpoint = {**(config.get("input_features") or {}), **(config.get("output_features") or {})}
-    problems: list[str] = []
-    # Camera names are routinely remapped with rename_map, so compare how many there are, not names.
-    cameras = len(_visual_inputs(config))
-    empty = config.get("empty_cameras")
-    needed = cameras - (empty if isinstance(empty, int) else 0)
-    available = sum(
-        1 for spec in declared.values() if isinstance(spec, dict) and spec.get("dtype") in ("video", "image")
-    )
-    if needed > available:
-        problems.append(f"the checkpoint expects {needed} camera(s), the dataset has {available}")
-    for key in ("observation.state", "action"):
-        spec, have = checkpoint.get(key), declared.get(key)
-        if not isinstance(spec, dict) or not isinstance(have, dict):
-            continue
-        shape, data = list(spec.get("shape") or []), list(have.get("shape") or [])
-        # pi0/pi05-style policies zero-pad state and action to a fixed width on purpose (#2963).
-        if shape and shape != data and shape != [padded.get(key)]:
-            problems.append(f"{key} is {shape} in the checkpoint but {data} in the dataset")
-    if checkpoint:
-        findings.append(
-            _finding(
-                "DATASET_FEATURE_MISMATCH",
-                DiagnosticStatus.CONFLICT if problems else DiagnosticStatus.PASS,
-                (
-                    "The checkpoint doesn't fit the dataset: " + "; ".join(problems) + ". Fine-tuning keeps "
-                    f"the checkpoint's features ({ISSUES}4517), and with a missing camera some policies shift "
-                    f"the other images into the wrong slots ({ISSUES}5118)."
-                )
-                if problems
-                else "The dataset has the cameras, state and action shapes the checkpoint expects.",
-                {"problems": problems, "checkpoint_cameras": needed, "dataset_cameras": available},
-            )
-        )
     if tasks is None:
         findings.append(
             _finding(

@@ -71,9 +71,9 @@ For `--sample`, save an `.npz` whose keys match the checkpoint's feature names, 
 
 Best of all, pass a whole recorded rollout (frames stacked along the first axis). Each near-zero-std finding then says whether your real data ever moved those coordinates, and by how much in normalized units.
 
-## 🎯 Before you evaluate or fine-tune
+## 🎯 Before you evaluate
 
-Many "this checkpoint gets 0%" reports come down to a checkpoint that doesn't match the environment or dataset it's used with. Tell Flinch what you'll run it with and it compares the files, without starting a simulator:
+Many "this checkpoint gets 0%" reports come down to a checkpoint that doesn't match the environment it's evaluated in. Tell Flinch what you'll run it with and it compares the files, without starting a simulator:
 
 ```bash
 # The environment you'll evaluate in, with the same settings you'll pass to lerobot-eval
@@ -81,8 +81,8 @@ flinch --policy hf://HuggingFaceVLA/smolvla_libero --env libero
 flinch --policy hf://HuggingFaceVLA/smolvla_libero --env libero \
   --env-option observation_height=256 --env-option observation_width=256
 
-# The dataset you'll fine-tune on (local folder or hf://owner/name; only its metadata is read)
-flinch --policy hf://lerobot/pi05_base --dataset hf://lerobot/libero
+# The dataset the checkpoint was trained on (local folder or hf://owner/name; only its metadata is read)
+flinch --policy hf://lerobot/smolvla_robocasa --dataset hf://lerobot/robocasa_target_human_unified
 ```
 
 | Check | Catches | Reported in |
@@ -90,10 +90,9 @@ flinch --policy hf://lerobot/pi05_base --dataset hf://lerobot/libero
 | `PROCESSOR_STEPS_MISSING` | saved processors missing steps LeRobot's own factory adds for that policy | [#3674](https://github.com/huggingface/lerobot/issues/3674) |
 | `ENV_IMAGE_SIZE_MISMATCH` | the env renders a different image size than the checkpoint was trained on | [#5185](https://github.com/huggingface/lerobot/issues/5185) |
 | `ENV_CAMERA_COUNT_MISMATCH` | fewer cameras than the checkpoint expects | [#5118](https://github.com/huggingface/lerobot/issues/5118) |
-| `DATASET_FEATURE_MISMATCH` | too few cameras, or a different state/action size, in the dataset | [#4517](https://github.com/huggingface/lerobot/issues/4517) |
 | `TASK_TEXT_FORMAT` | a policy trained on task IDs like `CloseFridge`, evaluated with sentences | [#4548](https://github.com/huggingface/lerobot/issues/4548) |
 
-Camera names aren't compared, because `rename_map` changes them; padded state and action (pi0, pi05) aren't flagged. The processor check covers LeRobot's built-in policy types. Reading `meta/tasks.parquet` needs `pyarrow`.
+Camera names aren't compared, because `rename_map` changes them. The processor check covers LeRobot's built-in policy types whose saved processors are what actually runs. Reading `meta/tasks.parquet` needs `pyarrow`.
 
 ## 🚦 Reading the output
 
