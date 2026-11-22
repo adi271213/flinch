@@ -7,6 +7,7 @@ are never downloaded. Diagnostics then run on the local snapshot exactly as for 
 
 from __future__ import annotations
 
+import functools
 import re
 import tempfile
 from collections.abc import Iterator
@@ -125,3 +126,37 @@ def resolve_checkpoint(value: str | Path, *, api: Any | None = None) -> Iterator
             reference.display(manifest.get("revision")),
             manifest,
         )
+
+
+@contextmanager
+def resolve_dataset(value: str | Path) -> Iterator[Path]:
+    """A local dataset folder, or the metadata of a public Hub dataset in a temporary folder."""
+    reference = parse_hub_reference(str(value))
+    if reference is None:
+        yield Path(value)
+        return
+    from huggingface_hub import hf_hub_download
+
+    from .hub_scanner import with_retries
+
+    with tempfile.TemporaryDirectory(prefix="flinch-dataset-") as temporary:
+        root = Path(temporary)
+        for name in ("meta/info.json", "meta/tasks.parquet", "meta/tasks.jsonl"):
+            try:
+                with_retries(
+                    functools.partial(
+                        hf_hub_download,
+                        reference.repo_id,
+                        name,
+                        repo_type="dataset",
+                        revision=reference.revision,
+                        local_dir=root,
+                        token=False,
+                    )
+                )
+            except Exception as exc:
+                if name == "meta/info.json":
+                    raise HubSourceError(
+                        f"Could not fetch the metadata of dataset {reference.display()} ({_first_line(exc)})."
+                    ) from exc
+        yield root

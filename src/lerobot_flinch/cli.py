@@ -14,12 +14,20 @@ from typing import Any
 import numpy as np
 
 from . import __version__
+from .eval_contract import (
+    check_dataset,
+    check_env,
+    check_processor_steps,
+    load_env_config,
+    read_dataset_meta,
+)
 from .hub_source import (
     HubSourceError,
     ResolvedCheckpoint,
     looks_like_repo_id,
     parse_hub_reference,
     resolve_checkpoint,
+    resolve_dataset,
 )
 from .models import (
     DiagnosticFinding,
@@ -141,6 +149,8 @@ def run_checks(
     std_threshold: float = 1e-4,
     strict: bool = False,
     metadata: Path | None = None,
+    env: Any | None = None,
+    dataset: Path | None = None,
 ) -> PreflightReport:
     """Run selected checks and collect failures without aborting later checks."""
     policy = Path(policy)
@@ -152,6 +162,7 @@ def run_checks(
         lambda: run_preflight(policy, std_warn_threshold=std_threshold, **metadata_options),
     )
     _collect(report, "temporal audit", lambda: run_temporal_audit(policy, **metadata_options))
+    _collect(report, "evaluation contract", lambda: _evaluation_contract(policy, env, dataset))
     if sample is not None:
         _collect(report, "offline trace", lambda: run_offline_trace(policy, Path(sample)))
         _add_sample_evidence(report, Path(sample))
@@ -165,6 +176,22 @@ def run_checks(
         _collect(report, "privilege delta", compare)
     _fold_base_model_prerequisites(report)
     return report
+
+
+def _evaluation_contract(policy: Path, env: Any | None, dataset: Path | None) -> list[DiagnosticFinding]:
+    """Checks against the env and dataset the checkpoint will be used with (eval_contract.py)."""
+    config_path = policy / "config.json"
+    if not config_path.is_file():
+        return []
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    if not isinstance(config, dict):
+        return []
+    findings = check_processor_steps(policy, config)
+    if env is not None:
+        findings += check_env(config, env)
+    if dataset is not None:
+        findings += check_dataset(config, *read_dataset_meta(dataset))
+    return findings
 
 
 def _is_unbound_missing_buffer(finding: DiagnosticFinding) -> bool:
@@ -409,12 +436,40 @@ def main(argv: list[str] | None = None) -> int:
         "--graph", type=Path, help="Export processor/feature lineage as .json, .mmd, or Markdown .md"
     )
     parser.add_argument(
+        "--env",
+        help="LeRobot env the checkpoint will be evaluated in (e.g. libero, robocasa); no simulator is started",
+    )
+    parser.add_argument(
+        "--env-option",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="Env setting as passed to lerobot-eval, e.g. observation_height=256 (repeatable)",
+    )
+    parser.add_argument(
+        "--dataset",
+        help="Dataset the checkpoint will be fine-tuned on or was trained on: local folder or hf://owner/name",
+    )
+    parser.add_argument(
         "--std-threshold",
         type=_positive_finite,
         default=1e-4,
         help="Warn below this saved standard deviation (default: 1e-4)",
     )
     args = parser.parse_args(argv)
+    if args.env_option and args.env is None:
+        parser.error("--env-option needs --env")
+    try:
+        options = dict(option.split("=", 1) for option in args.env_option)
+    except ValueError:
+        parser.error("--env-option takes KEY=VALUE")
+    try:
+        args.env_config = load_env_config(args.env, options) if args.env else None
+    except Exception as exc:  # Unknown env type or option, or a value LeRobot rejects.
+        parser.error(f"--env {args.env}: {exc}")
+    if args.dataset is not None and parse_hub_reference(args.dataset) is None:
+        if not (Path(args.dataset) / "meta" / "info.json").is_file():
+            parser.error(f"--dataset {args.dataset!r} has no meta/info.json")
     if args.graph is not None and args.graph.suffix.lower() not in {".json", ".mmd", ".md"}:
         parser.error(f"--graph must end in .json, .mmd or .md, not {args.graph.suffix or 'nothing'}")
     for option in ("policy", "baseline"):
@@ -443,6 +498,7 @@ def main(argv: list[str] | None = None) -> int:
         with ExitStack() as stack:
             policy = stack.enter_context(resolve_checkpoint(args.policy))
             baseline = stack.enter_context(resolve_checkpoint(args.baseline)) if args.baseline else None
+            args.dataset_path = stack.enter_context(resolve_dataset(args.dataset)) if args.dataset else None
             return _run_resolved(args, policy, baseline)
     except HubSourceError as exc:
         print(f"flinch: {exc}", file=sys.stderr)
@@ -494,6 +550,8 @@ def _run_resolved(
             args.std_threshold,
             strict=args.strict,
             metadata=args.metadata,
+            env=args.env_config,
+            dataset=args.dataset_path,
         )
     except Exception as exc:
         report = PreflightReport(
