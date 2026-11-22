@@ -15,7 +15,7 @@ from lerobot_flinch.eval_contract import (
     load_env_config,
     read_dataset_tasks,
 )
-from lerobot_flinch.models import DiagnosticStatus
+from lerobot_flinch.models import DiagnosticStatus, Severity
 
 
 def _images(*names: str, size: int = 256) -> dict[str, dict[str, object]]:
@@ -46,12 +46,15 @@ def _xvla_checkpoint(root: Path, steps: list[str]) -> Path:
     return root
 
 
-def test_missing_factory_steps_are_a_conflict(tmp_path: Path) -> None:
+def test_missing_factory_steps_are_a_warning_not_a_conflict(tmp_path: Path) -> None:
     # The steps lerobot/xvla-libero ships (#3674): no image-to-float or ImageNet normalization.
+    # Measured on xvla-widowx, the missing normalization moved actions less than sampling noise,
+    # so a missing step is reported as an advisory, not as a broken checkpoint.
     shipped = ["rename_observations_processor", "to_batch_processor", "tokenizer_processor"]
     checkpoint = _xvla_checkpoint(tmp_path / "xvla", [*shipped, "xvla_add_domain_id", "normalizer_processor"])
     finding = _status(check_processor_steps(checkpoint, {"type": "xvla"}), "PROCESSOR_STEPS_MISSING")
-    assert finding.status is DiagnosticStatus.CONFLICT
+    assert finding.status is DiagnosticStatus.PASS
+    assert finding.severity is Severity.WARNING and finding.details["advisory"] is True
     # Image-to-float is a no-op on LeRobot's [0, 1] images, so only the normalization is reported.
     assert finding.details["missing_steps"] == ["xvla_imagenet_normalize"]
 
@@ -63,7 +66,7 @@ def test_steps_the_env_processor_adds_are_not_missing(tmp_path: Path) -> None:
         check_processor_steps(checkpoint, {"type": "xvla"}, load_env_config("libero", {})),
         "PROCESSOR_STEPS_MISSING",
     )
-    assert libero.status is DiagnosticStatus.PASS
+    assert libero.status is DiagnosticStatus.PASS and "advisory" not in libero.details
     alone = _status(check_processor_steps(checkpoint, {"type": "xvla"}), "PROCESSOR_STEPS_MISSING")
     assert alone.details["missing_steps"] == ["xvla_imagenet_normalize"]
 

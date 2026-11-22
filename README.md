@@ -87,10 +87,10 @@ flinch --policy hf://lerobot/smolvla_robocasa --dataset hf://lerobot/robocasa_ta
 
 | Check | Catches | Reported in |
 | --- | --- | --- |
-| `PROCESSOR_STEPS_MISSING` | saved processors missing steps LeRobot's own factory adds for that policy | [#3674](https://github.com/huggingface/lerobot/issues/3674) |
+| `PROCESSOR_STEPS_MISSING` (warning) | saved processors missing steps LeRobot's own factory adds for that policy | [#3674](https://github.com/huggingface/lerobot/issues/3674) |
 | `ENV_IMAGE_SIZE_MISMATCH` | the env renders a different image size than the checkpoint was trained on | [#5185](https://github.com/huggingface/lerobot/issues/5185) |
 | `ENV_CAMERA_COUNT_MISMATCH` | fewer cameras than the checkpoint expects | [#5118](https://github.com/huggingface/lerobot/issues/5118) |
-| `TASK_TEXT_FORMAT` | a policy trained on task IDs like `CloseFridge`, evaluated with sentences | [#4548](https://github.com/huggingface/lerobot/issues/4548) |
+| `TASK_TEXT_FORMAT` (warning) | a policy trained on task IDs like `CloseFridge`, evaluated with sentences | [#4548](https://github.com/huggingface/lerobot/issues/4548) |
 
 Camera names aren't compared, because `rename_map` changes them. The processor check covers LeRobot's built-in policy types whose saved processors are what actually runs. Reading `meta/tasks.parquet` needs `pyarrow`.
 

@@ -146,10 +146,16 @@ def check_processor_steps(
         return [
             _finding(
                 "PROCESSOR_STEPS_MISSING",
-                DiagnosticStatus.CONFLICT,
+                DiagnosticStatus.PASS,
                 f"The saved processors lack steps LeRobot's {policy_type} factory always adds: "
-                f"{', '.join(missing)}, {where}. Inputs will not match training. See {ISSUES}3674.",
-                {"policy_type": policy_type, "missing_steps": missing, "conditional_missing": maybe},
+                f"{', '.join(missing)}, {where}. The policy's inputs differ from the factory's; whether "
+                f"that changes its actions depends on the model, so compare a rollout. See {ISSUES}3674.",
+                {
+                    "policy_type": policy_type,
+                    "missing_steps": missing,
+                    "conditional_missing": maybe,
+                    "advisory": True,
+                },
             )
         ]
     return [
