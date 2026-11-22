@@ -62,7 +62,20 @@ def test_missing_factory_steps_are_a_conflict(tmp_path: Path) -> None:
     checkpoint = _xvla_checkpoint(tmp_path / "xvla", [*shipped, "xvla_add_domain_id", "normalizer_processor"])
     finding = _status(check_processor_steps(checkpoint, {"type": "xvla"}), "PROCESSOR_STEPS_MISSING")
     assert finding.status is DiagnosticStatus.CONFLICT
-    assert finding.details["missing_steps"] == ["xvla_image_to_float", "xvla_imagenet_normalize"]
+    # Image-to-float is a no-op on LeRobot's [0, 1] images, so only the normalization is reported.
+    assert finding.details["missing_steps"] == ["xvla_imagenet_normalize"]
+
+
+def test_steps_the_env_processor_adds_are_not_missing(tmp_path: Path) -> None:
+    # lerobot-eval adds ImageNet normalization for X-VLA on LIBERO (make_env_pre_post_processors).
+    checkpoint = _xvla_checkpoint(tmp_path / "xvla", ["tokenizer_processor"])
+    libero = _status(
+        check_processor_steps(checkpoint, {"type": "xvla"}, load_env_config("libero", {})),
+        "PROCESSOR_STEPS_MISSING",
+    )
+    assert libero.status is DiagnosticStatus.PASS
+    alone = _status(check_processor_steps(checkpoint, {"type": "xvla"}), "PROCESSOR_STEPS_MISSING")
+    assert alone.details["missing_steps"] == ["xvla_imagenet_normalize"]
 
 
 def test_complete_processor_passes(tmp_path: Path) -> None:
@@ -260,11 +273,7 @@ def test_vla_jepa_image_prep_is_done_by_the_model_when_absent(tmp_path: Path) ->
     ).status is (DiagnosticStatus.PASS)
 
 
-@pytest.mark.parametrize(("n_obs_steps", "required"), [(1, False), (2, True)])
-def test_g05_history_crop_only_matters_with_several_observation_steps(
-    tmp_path: Path, n_obs_steps: int, required: bool
-) -> None:
-    config = {"type": "g05", "n_obs_steps": n_obs_steps}
-    checkpoint = _checkpoint(tmp_path / "g05", config, sorted(_always("g05") - {"g05_action_history_crop"}))
-    finding = _status(check_processor_steps(checkpoint, config), "PROCESSOR_STEPS_MISSING")
-    assert ("g05_action_history_crop" in finding.details.get("missing_steps", [])) is required
+def test_policies_rebuilt_at_load_are_not_compared(tmp_path: Path) -> None:
+    # LeRobot rebuilds G05's processors from code at load, so the saved files are not what runs.
+    checkpoint = _checkpoint(tmp_path / "g05", {"type": "g05"}, ["normalizer_processor"])
+    assert check_processor_steps(checkpoint, {"type": "g05"}) == []

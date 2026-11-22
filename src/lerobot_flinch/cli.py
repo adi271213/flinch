@@ -186,7 +186,7 @@ def _evaluation_contract(policy: Path, env: Any | None, dataset: Path | None) ->
     config = json.loads(config_path.read_text(encoding="utf-8"))
     if not isinstance(config, dict):
         return []
-    findings = check_processor_steps(policy, config)
+    findings = check_processor_steps(policy, config, env)
     if env is not None:
         findings += check_env(config, env)
     if dataset is not None:

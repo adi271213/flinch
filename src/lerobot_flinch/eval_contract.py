@@ -48,22 +48,27 @@ def _visual_inputs(config: dict[str, Any]) -> dict[str, list[int]]:
 # --- Checkpoint only -------------------------------------------------------------------------
 
 
-# Steps LeRobot documents as harmless when absent from an older saved pipeline.
-_HARMLESS_WHEN_ABSENT: dict[str, Any] = {
+# Steps whose absence changes nothing on LeRobot's own loading paths.
+_HARMLESS_WHEN_ABSENT = {
     # The model keeps the same image prep as idempotent guards (ImagePrepProcessorStep docstring).
-    "vla_jepa_image_prep": lambda config: True,
-    # Crops nothing when the policy observes a single step (G05ActionHistoryCropStep.action).
-    "g05_action_history_crop": lambda config: (config.get("n_obs_steps") or 1) <= 1,
+    "vla_jepa_image_prep",
+    # A no-op on images already in [0, 1], which LeRobot's env and robot paths deliver.
+    "xvla_image_to_float",
+    # The step's default domain_id is 0, the model's own fallback without it (_get_domain_id).
+    "xvla_add_domain_id",
 }
 
 
 def _factory_steps(policy_type: str) -> tuple[set[str], set[str]] | None:
     """Registry names of the steps LeRobot's own factory builds, read from its source.
 
-    Returns (always built, built only under a condition), or None when there is no factory.
+    Returns (always built, built only under a condition), or None when there is no factory
+    or LeRobot rebuilds this policy's processors at load time instead of using the saved files.
     """
     try:
         module = importlib.import_module(f"lerobot.policies.{policy_type}.processor_{policy_type}")
+        if hasattr(module, f"make_{policy_type}_pre_post_processors_from_pretrained"):
+            return None
         factory = getattr(module, f"make_{policy_type}_pre_post_processors")
         tree = ast.parse(inspect.getsource(factory))
     except (ImportError, AttributeError, OSError, SyntaxError):
@@ -88,7 +93,28 @@ def _factory_steps(policy_type: str) -> tuple[set[str], set[str]] | None:
     return always, conditional - always
 
 
-def check_processor_steps(checkpoint: Path, config: dict[str, Any]) -> list[DiagnosticFinding]:
+def _env_steps(env: Any, policy_type: str) -> set[str]:
+    """Steps lerobot-eval's env processor adds for this env and policy type (e.g. X-VLA on LIBERO)."""
+    try:
+        from lerobot.configs.policies import PreTrainedConfig
+        from lerobot.envs.factory import make_env_pre_post_processors
+
+        importlib.import_module(f"lerobot.policies.{policy_type}.configuration_{policy_type}")
+        policy_class = PreTrainedConfig.get_choice_class(policy_type)
+        # The factory only checks the config's class, so an unparsed instance is enough.
+        preprocessor, _ = make_env_pre_post_processors(env, policy_class.__new__(policy_class))
+        return {
+            name
+            for step in preprocessor.steps
+            if isinstance(name := getattr(step, "_registry_name", None), str)
+        }
+    except Exception:  # noqa: BLE001 - LeRobot internals vary by version; fall back to the saved files.
+        return set()
+
+
+def check_processor_steps(
+    checkpoint: Path, config: dict[str, Any], env: Any | None = None
+) -> list[DiagnosticFinding]:
     """#3674, #2954: saved processors missing steps the factory adds; rollouts silently fail."""
     policy_type = config.get("type")
     saved: set[str] = set()
@@ -109,16 +135,20 @@ def check_processor_steps(checkpoint: Path, config: dict[str, Any]) -> list[Diag
     if expected is None:
         return []  # Not a built-in LeRobot policy type: there is no reference pipeline to compare.
     always, conditional = expected
-    harmless = {step for step, check in _HARMLESS_WHEN_ABSENT.items() if check(config)}
-    missing, maybe = sorted(always - saved - harmless), sorted(conditional - saved)
+    supplied = saved | (_env_steps(env, policy_type) if env is not None else set())
+    missing, maybe = sorted(always - supplied - _HARMLESS_WHEN_ABSENT), sorted(conditional - supplied)
     if missing:
+        where = (
+            f"and the {env.type} env's processor doesn't add them either"
+            if env is not None
+            else "unless your environment's processor adds them"
+        )
         return [
             _finding(
                 "PROCESSOR_STEPS_MISSING",
                 DiagnosticStatus.CONFLICT,
                 f"The saved processors lack steps LeRobot's {policy_type} factory always adds: "
-                f"{', '.join(missing)}. Unless your environment's processor adds them, inputs will not "
-                f"match training. See {ISSUES}3674.",
+                f"{', '.join(missing)}, {where}. Inputs will not match training. See {ISSUES}3674.",
                 {"policy_type": policy_type, "missing_steps": missing, "conditional_missing": maybe},
             )
         ]
