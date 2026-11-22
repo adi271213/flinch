@@ -48,6 +48,15 @@ def _visual_inputs(config: dict[str, Any]) -> dict[str, list[int]]:
 # --- Checkpoint only -------------------------------------------------------------------------
 
 
+# Steps LeRobot documents as harmless when absent from an older saved pipeline.
+_HARMLESS_WHEN_ABSENT: dict[str, Any] = {
+    # The model keeps the same image prep as idempotent guards (ImagePrepProcessorStep docstring).
+    "vla_jepa_image_prep": lambda config: True,
+    # Crops nothing when the policy observes a single step (G05ActionHistoryCropStep.action).
+    "g05_action_history_crop": lambda config: (config.get("n_obs_steps") or 1) <= 1,
+}
+
+
 def _factory_steps(policy_type: str) -> tuple[set[str], set[str]] | None:
     """Registry names of the steps LeRobot's own factory builds, read from its source.
 
@@ -68,8 +77,11 @@ def _factory_steps(policy_type: str) -> tuple[set[str], set[str]] | None:
             if isinstance(child, ast.Call) and isinstance(child.func, ast.Name):
                 cls = getattr(module, child.func.id, None)
                 name = getattr(cls, "_registry_name", None)
+                # A step built with enabled=<config flag> is switched off by default, so a saved
+                # pipeline without it is fine (e.g. relative actions with use_relative_actions=False).
+                switched = any(keyword.arg == "enabled" for keyword in child.keywords)
                 if isinstance(name, str):
-                    (conditional if inner else always).add(name)
+                    (conditional if inner or switched else always).add(name)
             visit(child, inner)
 
     visit(tree, False)
@@ -97,14 +109,16 @@ def check_processor_steps(checkpoint: Path, config: dict[str, Any]) -> list[Diag
     if expected is None:
         return []  # Not a built-in LeRobot policy type: there is no reference pipeline to compare.
     always, conditional = expected
-    missing, maybe = sorted(always - saved), sorted(conditional - saved)
+    harmless = {step for step, check in _HARMLESS_WHEN_ABSENT.items() if check(config)}
+    missing, maybe = sorted(always - saved - harmless), sorted(conditional - saved)
     if missing:
         return [
             _finding(
                 "PROCESSOR_STEPS_MISSING",
                 DiagnosticStatus.CONFLICT,
                 f"The saved processors lack steps LeRobot's {policy_type} factory always adds: "
-                f"{', '.join(missing)}. Inputs will not match training. See {ISSUES}3674.",
+                f"{', '.join(missing)}. Unless your environment's processor adds them, inputs will not "
+                f"match training. See {ISSUES}3674.",
                 {"policy_type": policy_type, "missing_steps": missing, "conditional_missing": maybe},
             )
         ]

@@ -221,3 +221,50 @@ def test_cli_usage_errors(
         main(["--policy", str(checkpoint), *[arg.format(tmp=tmp_path) for arg in extra]])
     assert exit_info.value.code == 2
     assert message in capsys.readouterr().err
+
+
+# --- False positives found by scanning all 71 official checkpoints with processor files ------
+
+
+def _checkpoint(root: Path, config: dict[str, object], steps: list[str]) -> Path:
+    root.mkdir()
+    (root / "config.json").write_text(json.dumps(config))
+    (root / "policy_preprocessor.json").write_text(
+        json.dumps({"steps": [{"registry_name": s} for s in steps]})
+    )
+    return root
+
+
+def _always(policy_type: str) -> set[str]:
+    from lerobot_flinch.eval_contract import _factory_steps
+
+    expected = _factory_steps(policy_type)
+    assert expected is not None
+    return expected[0]
+
+
+def test_switched_off_relative_actions_are_not_required(tmp_path: Path) -> None:
+    # pi05's factory builds RelativeActionsProcessorStep(enabled=config.use_relative_actions).
+    assert "relative_actions_processor" not in _always("pi05")
+    checkpoint = _checkpoint(tmp_path / "pi05", {"type": "pi05"}, sorted(_always("pi05")))
+    assert _status(check_processor_steps(checkpoint, {"type": "pi05"}), "PROCESSOR_STEPS_MISSING").status is (
+        DiagnosticStatus.PASS
+    )
+
+
+def test_vla_jepa_image_prep_is_done_by_the_model_when_absent(tmp_path: Path) -> None:
+    saved = sorted(_always("vla_jepa") - {"vla_jepa_image_prep"})
+    checkpoint = _checkpoint(tmp_path / "jepa", {"type": "vla_jepa"}, saved)
+    assert _status(
+        check_processor_steps(checkpoint, {"type": "vla_jepa"}), "PROCESSOR_STEPS_MISSING"
+    ).status is (DiagnosticStatus.PASS)
+
+
+@pytest.mark.parametrize(("n_obs_steps", "required"), [(1, False), (2, True)])
+def test_g05_history_crop_only_matters_with_several_observation_steps(
+    tmp_path: Path, n_obs_steps: int, required: bool
+) -> None:
+    config = {"type": "g05", "n_obs_steps": n_obs_steps}
+    checkpoint = _checkpoint(tmp_path / "g05", config, sorted(_always("g05") - {"g05_action_history_crop"}))
+    finding = _status(check_processor_steps(checkpoint, config), "PROCESSOR_STEPS_MISSING")
+    assert ("g05_action_history_crop" in finding.details.get("missing_steps", [])) is required
